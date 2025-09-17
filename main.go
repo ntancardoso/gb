@@ -9,11 +9,12 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 var (
 	// Configuration variables
-	defaultWorkers = 10
+	defaultWorkers = 20
 
 	// Common directories to skip during repository discovery
 	skipDirs = []string{
@@ -21,6 +22,9 @@ var (
 		"target", "bin", "obj", ".next", "coverage", ".nyc_output", "__pycache__",
 		".pytest_cache", ".tox", ".venv", "venv", ".env", "env",
 	}
+
+	skipSet    map[string]struct{}
+	includeSet map[string]struct{}
 )
 
 func checkGitInstalled() {
@@ -36,20 +40,65 @@ func main() {
 
 	var listBranches = flag.Bool("list", false, "List all branches found in repositories")
 	var workers = flag.Int("workers", defaultWorkers, "Number of concurrent workers")
+	var skipDirsFlag = flag.String("skipDirs", "", "Comma-separated list of directories to skip (overrides defaults)")
+	var includeDirsFlag = flag.String("includeDirs", "", "Comma-separated list of directories to include (removes them from skipDirs)")
 
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s [options] <branch_name>\n", os.Args[0])
 		fmt.Println("Options:")
 		fmt.Println("  -list         List all branches found in repositories without switching")
 		fmt.Printf("  -workers N    Number of concurrent workers (default: %d)\n", defaultWorkers)
+		fmt.Println("  -skipDirs     Comma-separated list of directories to skip (overrides defaults)")
+		fmt.Println("  -includeDirs  Comma-separated list of directories to include (removes them from skipDirs)")
 		fmt.Println("Examples:")
 		fmt.Printf("  %s main\n", os.Args[0])
 		fmt.Printf("  %s -list\n", os.Args[0])
-		fmt.Printf("  %s -list -workers 50\n", os.Args[0])
-		fmt.Printf("  %s main -workers 5\n", os.Args[0])
+		fmt.Printf("  %s -workers 50 -list\n", os.Args[0])
+		fmt.Printf("  %s -workers 5 main\n", os.Args[0])
+		fmt.Printf("  %s -list -includeDirs \"dir1,dir2\"\n", os.Args[0])
 	}
 	flag.Parse()
 
+	// Parse skipDirs
+	if *skipDirsFlag != "" {
+		skipDirs = strings.Split(*skipDirsFlag, ",")
+		for i := range skipDirs {
+			skipDirs[i] = strings.TrimSpace(skipDirs[i])
+		}
+	}
+
+	// Parse includeDirs
+	includeDirs := []string{}
+	if *includeDirsFlag != "" {
+		includeDirs = strings.Split(*includeDirsFlag, ",")
+		for i := range includeDirs {
+			includeDirs[i] = strings.TrimSpace(includeDirs[i])
+		}
+	}
+
+	// Remove includeDirs from skipDirs
+	if len(includeDirs) > 0 {
+		filtered := []string{}
+		tmpSkip := make(map[string]bool)
+		for _, s := range skipDirs {
+			tmpSkip[s] = true
+		}
+		for _, inc := range includeDirs {
+			delete(tmpSkip, inc)
+		}
+		for s := range tmpSkip {
+			filtered = append(filtered, s)
+		}
+		skipDirs = filtered
+
+		// assign to global includeSet
+		includeSet = make(map[string]struct{}, len(includeDirs))
+		for _, d := range includeDirs {
+			includeSet[d] = struct{}{}
+		}
+	}
+
+	skipSet = buildSkipSet(skipDirs)
 	root, _ := os.Getwd()
 
 	// Resolve symlinks/junctions
@@ -102,18 +151,49 @@ type SwitchResult struct {
 	Error   string
 }
 
-func shouldSkipDir(name string) bool {
-	// Check exact matches
-	for _, skip := range skipDirs {
-		if name == skip {
-			return true
-		}
+func buildSkipSet(skipDirs []string) map[string]struct{} {
+	m := make(map[string]struct{}, len(skipDirs))
+	for _, s := range skipDirs {
+		m[s] = struct{}{}
 	}
-	// Skip hidden directories except .git
+	return m
+}
+
+func shouldSkipDir(name string, includeSet map[string]struct{}) bool {
+	if _, inc := includeSet[name]; inc {
+		return false
+	}
+	if _, found := skipSet[name]; found {
+		return true
+	}
 	if strings.HasPrefix(name, ".") && name != ".git" {
 		return true
 	}
 	return false
+}
+
+func getBranch(path string) (string, error) {
+	cmds := [][]string{
+		{"git", "branch", "--show-current"},
+		{"git", "rev-parse", "--abbrev-ref", "HEAD"},
+	}
+	for _, args := range cmds {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = path
+		if out, err := cmd.Output(); err == nil {
+			branch := strings.TrimSpace(string(out))
+			if branch != "" && branch != "HEAD" {
+				return branch, nil
+			}
+		}
+	}
+	// Check for commits
+	cmd := exec.Command("git", "log", "-1", "--oneline")
+	cmd.Dir = path
+	if err := cmd.Run(); err != nil {
+		return "no commits", nil
+	}
+	return "detached", nil
 }
 
 func findGitRepos(root string) ([]RepoInfo, error) {
@@ -121,6 +201,7 @@ func findGitRepos(root string) ([]RepoInfo, error) {
 	visitedDirs := make(map[string]bool)
 	processed := 0
 	skipped := 0
+	lastPrint := time.Now()
 
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -131,7 +212,7 @@ func findGitRepos(root string) ([]RepoInfo, error) {
 			name := d.Name()
 
 			// Early skip for common large directories
-			if shouldSkipDir(name) {
+			if shouldSkipDir(name, includeSet) {
 				skipped++
 				return filepath.SkipDir
 			}
@@ -146,17 +227,19 @@ func findGitRepos(root string) ([]RepoInfo, error) {
 			}
 
 			processed++
-			if processed%1000 == 0 {
+			if time.Since(lastPrint) > 500*time.Millisecond {
 				fmt.Printf("Scanned %d directories (skipped %d)...\r", processed, skipped)
+				lastPrint = time.Now()
 			}
 
-			// Check for git repo - but don't skip subdirs (allow nested repos)
-			if _, err := os.Stat(filepath.Join(path, ".git")); err == nil {
+			// Check for .git directory
+			gitPath := filepath.Join(path, ".git")
+			if _, err := os.Stat(gitPath); err == nil {
 				relPath, _ := filepath.Rel(root, path)
-				repos = append(repos, RepoInfo{
-					Path:    path,
-					RelPath: relPath,
-				})
+				repos = append(repos, RepoInfo{Path: path, RelPath: relPath})
+
+				// Skip walking inside a repo (prevents nested matches inside .git or submodule)
+				return filepath.SkipDir
 			}
 		}
 		return nil
@@ -192,43 +275,11 @@ func listAllBranches(root string, workers int) {
 		go func() {
 			defer wg.Done()
 			for repo := range repoChan {
-				var branch string
-				var repoErr error
-
-				// Try multiple methods to get current branch
-				cmd := exec.Command("git", "branch", "--show-current")
-				cmd.Dir = repo.Path
-				if output, err := cmd.Output(); err == nil {
-					branch = strings.TrimSpace(string(output))
-				}
-
-				// If empty, try alternative method for detached HEAD
-				if branch == "" {
-					cmd = exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
-					cmd.Dir = repo.Path
-					if output, err := cmd.Output(); err == nil {
-						branch = strings.TrimSpace(string(output))
-						if branch == "HEAD" {
-							branch = "detached"
-						}
-					} else {
-						repoErr = err
-					}
-				}
-
-				// If still empty, check if repo has any commits
-				if branch == "" && repoErr == nil {
-					cmd = exec.Command("git", "log", "-1", "--oneline")
-					cmd.Dir = repo.Path
-					if err := cmd.Run(); err != nil {
-						branch = "no commits"
-					}
-				}
-
+				branch, err := getBranch(repo.Path)
 				resultChan <- BranchResult{
 					RelPath: repo.RelPath,
 					Branch:  branch,
-					Error:   repoErr,
+					Error:   err,
 				}
 			}
 		}()

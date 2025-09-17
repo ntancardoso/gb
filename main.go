@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 func main() {
@@ -23,6 +24,48 @@ func main() {
 
 	targetBranch := flag.Arg(0)
 	root, _ := os.Getwd()
+
+	// Debug and resolve symlinks/junctions with multiple approaches
+	fmt.Printf("Original path: %s\n", root)
+
+	// Try method 1: EvalSymlinks
+	if realRoot, err := filepath.EvalSymlinks(root); err == nil && realRoot != root {
+		fmt.Printf("EvalSymlinks resolved to: %s\n", realRoot)
+		root = realRoot
+	} else {
+		fmt.Printf("EvalSymlinks failed or no change: %v\n", err)
+
+		// Try method 2: Read symlink directly
+		if target, err := os.Readlink(root); err == nil {
+			fmt.Printf("Readlink found target: %s\n", target)
+
+			// Convert WSL path /c/path to C:\path
+			if strings.HasPrefix(target, "/c/") {
+				windowsPath := "C:" + strings.ReplaceAll(target[2:], "/", "\\")
+				fmt.Printf("Converted to Windows path: %s\n", windowsPath)
+				if _, err := os.Stat(windowsPath); err == nil {
+					root = windowsPath
+				} else {
+					fmt.Printf("Windows path not accessible: %v\n", err)
+				}
+			} else if filepath.IsAbs(target) {
+				root = target
+			}
+		} else {
+			fmt.Printf("Readlink failed: %v\n", err)
+
+			// Try method 3: Check if it's a junction point
+			if info, err := os.Lstat(root); err == nil {
+				fmt.Printf("File mode: %s\n", info.Mode())
+				if info.Mode()&os.ModeSymlink != 0 {
+					fmt.Println("Detected as symlink via Lstat")
+				}
+			}
+		}
+	}
+
+	fmt.Printf("Final path to walk: %s\n", root)
+
 	var count, errors int
 
 	filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {

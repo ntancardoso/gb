@@ -11,6 +11,8 @@ import (
 )
 
 func main() {
+	checkGitInstalled()
+
 	var listBranches = flag.Bool("list", false, "List all branches found in repositories")
 
 	flag.Usage = func() {
@@ -53,6 +55,14 @@ func main() {
 
 	targetBranch := flag.Arg(0)
 	switchBranches(root, targetBranch)
+}
+
+func checkGitInstalled() {
+	if _, err := exec.LookPath("git"); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: Git is required but not found in PATH\n")
+		fmt.Fprintf(os.Stderr, "Please install Git and ensure it's available in your PATH\n")
+		os.Exit(1)
+	}
 }
 
 func listAllBranches(root string) {

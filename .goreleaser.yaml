@@ -1,0 +1,25 @@
+project_name: gb
+
+builds:
+  - id: gb
+    main: ./cmd/gb
+    binary: gb
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ldflags:
+      - "-s -w -X github.com/ntancardoso/gb/internal/core.version={{.Version}}"
+
+archives:
+  - format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+  - format: zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+release:
+  github:
+    owner: ntancardoso
+    name: gb
+
+dist: bin/release

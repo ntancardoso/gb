@@ -1,58 +1,196 @@
 # Git Branch Switcher (gb)
 
-A specialized CLI tool for maintaining consistent branch versions across Odoo projects and OCA modules.
+A specialized CLI tool for maintaining consistent branch versions across multiple Git repositories, designed primarily for Odoo projects and OCA modules.
 
 ## Primary Use Case
 
 **Odoo Version Synchronization**  
 Designed specifically for Odoo developers to:
 - Maintain identical versions across core Odoo and all OCA modules
-- Switch all related projects to the same version branch (e.g., 15.0, 16.0)
+- Switch all related projects to the same version branch (e.g., 15.0, 16.0, 17.0)
 - Manage branches in complex Odoo project structures like:
 ```
 /odoo-projects/
-├── odoo/ # Core Odoo
-├── design-themes/ # Themes
+├── odoo/                 # Core Odoo
+├── design-themes/        # Themes
 ├── OCA/
-│ ├── project/ # OCA project module
-│ ├── survey/ # OCA survey module
-│ └── ... # Other OCA modules
-└── custom/ # Custom modules
+│   ├── project/          # OCA project module
+│   ├── survey/           # OCA survey module
+│   └── ...               # Other OCA modules
+└── custom/               # Custom modules
 ```
 
 ## Features
 
-- Recursively switches branches through Odoo project structures
-- Handles both Odoo core and OCA module repositories
-- Smart branch detection (local → remote fallback)
-- Preserves branch tracking relationships
-- Skip non-relevant directories (`vendor/`, `node_modules/`)
+- **Recursive Discovery**: Automatically finds all Git repositories in subdirectories
+- **Concurrent Processing**: Uses configurable worker pools for fast branch switching
+- **Smart Branch Detection**: Handles local branches, remote tracking, and shallow repositories
+- **Flexible Filtering**: Skip or include specific directories with customizable rules
+- **Branch Listing**: View all current branches across repositories
+- **Detailed Reporting**: Shows progress and summarizes results
+- **Cross-Platform**: Works on Windows, Linux, and macOS with symlink/junction support
 
 ## Installation
 
+### Download Binary (Recommended)
+
+**Windows:**
+1. Download and extract `gb.exe` from [Releases](https://github.com/ntancardoso/gb/releases)
+2. Move to a folder in your PATH or add the folder to PATH
+
+**Linux/macOS:**
+1. Download and extract `gb` from [Releases](https://github.com/ntancardoso/gb/releases)
+2. Make executable and move to PATH:
 ```bash
-go build -o gb main.go
-sudo mv gb /usr/local/bin/  # Linux/macOS
-# On windows use go build -o gb.exe # and add to env PATH
+chmod +x gb
+sudo mv gb /usr/local/bin/
+```
+
+### Alternative: Go Install (requires Go)
+```bash
+go install github.com/ntancardoso/gb/cmd/gb@latest
+```
+
+### Build from Source (requires Go)
+```bash
+git clone https://github.com/ntancardoso/gb.git
+cd gb
+go build -o gb cmd/gb/main.go
+
+# Linux/macOS
+sudo mv gb /usr/local/bin/
+
+# Windows
+# Move gb.exe to a directory in your PATH
 ```
 
 ## Usage
+
+### Basic Commands
+
 ```bash
-gb 15.0 
+gb <options> <branch_name>
+```
+
+**Switch all repositories to a branch:**
+```bash
+gb 15.0
+gb main
+gb feature-branch
+```
+
+**List all current branches:**
+```bash
+gb -list
+```
+
+### Advanced Options
+
+```bash
+# Use more workers for faster processing
+gb -workers 50 15.0
+
+# Skip additional directories
+gb -skipDirs "build,dist,temp" 15.0
+
+# Include normally skipped directories
+gb -includeDirs "vendor,node_modules" -list
+
+# Combine options
+gb -workers 10 -includeDirs "custom-vendor" 16.0
+```
+
+### Full Command Reference
+
+```
+Usage: gb [options] <branch_name>
+
+Options:
+  -list                    List all branches found in repositories
+  -workers int             Number of concurrent workers (default 20)
+  -skipDirs string         Comma-separated list of directories to skip (overrides defaults)
+  -includeDirs string      Comma-separated list of directories to include (removes them from skipDirs)
+
+Examples:
+  gb main                  Switch all repos to main branch
+  gb -list                 List all current branches
+  gb -workers 50 -list     Fast branch listing with 50 workers
+  gb -workers 5 main       Switch with 5 concurrent workers
+  gb -includeDirs "vendor,dist" 15.0  Include normally skipped directories
 ```
 
 ## Typical Odoo Workflow
-1. Navigate to your Odoo projects folder:
+
+1. **Navigate to your Odoo projects folder:**
 ```bash
 cd ~/odoo-projects
 ```
 
-2. Synchronize all repositories to version 15.0:
+2. **Check current branch status:**
+```bash
+gb -list
+```
+
+3. **Synchronize all repositories to version 15.0:**
 ```bash
 gb 15.0
 ```
 
-# Requirements
-- Odoo project structure with Git repositories
-- Git installed
-- Go 1.16+ (for building)
+4. **Switch to development branch with progress monitoring:**
+```bash
+gb -workers 10 development
+```
+
+## How It Works
+
+1. **Discovery Phase**: Recursively scans directories for Git repositories
+2. **Branch Analysis**: Checks if target branch exists locally or remotely  
+3. **Concurrent Switching**: Uses worker pools to process multiple repositories simultaneously
+4. **Smart Fallbacks**: Automatically handles:
+   - Creating tracking branches from remote
+   - Fetching missing branches (with shallow repository support)
+   - Branch creation and checkout operations
+5. **Progress Reporting**: Real-time updates and final summary
+
+## Default Skip Directories
+
+By default, gb skips these directories to improve performance:
+- `vendor`, `node_modules`, `.vscode`, `.idea`
+- `build`, `dist`, `out`, `target`, `bin`, `obj`
+- `.next`, `coverage`, `.nyc_output`
+- `__pycache__`, `.pytest_cache`, `.tox`
+- `.venv`, `venv`, `.env`, `env`
+
+Use `-includeDirs` to include specific directories or `-skipDirs` to override the defaults.
+
+## Error Handling
+
+- **Branch not found**: Reports repositories where the target branch doesn't exist
+- **Switch failures**: Shows detailed error messages for failed operations
+- **Permission issues**: Handles repository access problems gracefully
+- **Network issues**: Manages remote fetch failures appropriately
+
+## Requirements
+
+- **Git**: Must be installed and accessible in PATH
+- **Go 1.19+**: For building from source
+- **File System**: Read access to repository directories
+
+## Platform Support
+
+- **Windows**: Full support including WSL symlinks and NTFS junctions
+- **Linux**: Native support with symlink resolution
+- **macOS**: Native support with symlink resolution
+
+## Contributing
+
+1. Fork the repository
+2. Create your feature branch (`gb feature-branch`)
+3. Run tests: `go test ./...`
+4. Commit your changes
+5. Push to the branch
+6. Create a Pull Request
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.

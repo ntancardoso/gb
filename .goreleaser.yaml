@@ -1,4 +1,10 @@
+# .goreleaser.yml
+version: 2
 project_name: gb
+
+before:
+  hooks:
+    - go mod tidy
 
 builds:
   - id: gb
@@ -6,16 +12,28 @@ builds:
     binary: gb
     env:
       - CGO_ENABLED=0
-    goos: [linux, darwin, windows]
-    goarch: [amd64, arm64]
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
     ldflags:
       - "-s -w -X github.com/ntancardoso/gb/internal/core.version={{.Version}}"
 
 archives:
-  - format: tar.gz
+  - id: tarballs
+    format: tar.gz
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
-  - format: zip
+    builds:
+      - gb
+
+  - id: zips
+    format: zip
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    builds:
+      - gb
 
 release:
   github:
@@ -23,3 +41,10 @@ release:
     name: gb
 
 dist: bin/release
+
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  name_template: "{{ .Tag }}-next"
+

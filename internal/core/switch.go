@@ -2,11 +2,20 @@ package core
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"sort"
 	"strings"
 	"sync"
+)
+
+const (
+	maxDisplayedRepos = 30
+	statusWaiting     = "waiting"
+	statusProcessing  = "processing"
+	statusCompleted   = "completed"
+	statusFailed      = "failed"
 )
 
 type SwitchResult struct {
@@ -15,27 +24,56 @@ type SwitchResult struct {
 	Error   string
 }
 
+type repoStatus struct {
+	state   string
+	message string
+}
+
+// ProgressState tracks and displays the progress of branch switching operations
+// across multiple repositories. It supports both ANSI-capable terminals with
+// live updates and simple terminals with periodic status messages.
 type ProgressState struct {
-	repos      []RepoInfo
-	statuses   []string // indexed by repo order
-	completed  []bool   // track completion
-	mu         sync.Mutex
-	totalRepos int
-	linesDrawn int
+	repos        []RepoInfo
+	statuses     []repoStatus
+	mu           sync.Mutex
+	totalRepos   int
+	linesDrawn   int
+	writer       io.Writer
+	supportsANSI bool
 }
 
 func NewProgressState(repos []RepoInfo) *ProgressState {
-	statuses := make([]string, len(repos))
-	completed := make([]bool, len(repos))
+	statuses := make([]repoStatus, len(repos))
 	for i := range statuses {
-		statuses[i] = "waiting"
+		statuses[i] = repoStatus{state: statusWaiting}
 	}
+
 	return &ProgressState{
-		repos:      repos,
-		statuses:   statuses,
-		completed:  completed,
-		totalRepos: len(repos),
+		repos:        repos,
+		statuses:     statuses,
+		totalRepos:   len(repos),
+		writer:       os.Stdout,
+		supportsANSI: supportsANSI(),
 	}
+}
+
+// supportsANSI checks if the terminal supports ANSI escape codes
+func supportsANSI() bool {
+	// Check if stdout is a terminal
+	if fileInfo, _ := os.Stdout.Stat(); (fileInfo.Mode() & os.ModeCharDevice) == 0 {
+		return false
+	}
+
+	// On Windows, check for TERM or WT_SESSION (Windows Terminal)
+	term := os.Getenv("TERM")
+	if term != "" && term != "dumb" {
+		return true
+	}
+	if os.Getenv("WT_SESSION") != "" {
+		return true
+	}
+
+	return false
 }
 
 func (ps *ProgressState) UpdateStatus(relPath, status, errorMsg string) {
@@ -43,116 +81,147 @@ func (ps *ProgressState) UpdateStatus(relPath, status, errorMsg string) {
 	defer ps.mu.Unlock()
 
 	// Find repo index
-	repoIndex := -1
-	for i, repo := range ps.repos {
-		if repo.RelPath == relPath {
-			repoIndex = i
-			break
-		}
-	}
+	repoIndex := ps.findRepoIndex(relPath)
 	if repoIndex == -1 {
 		return
 	}
 
 	// Update status
 	switch status {
-	case "processing":
-		ps.statuses[repoIndex] = "processing..."
-	case "ok":
-		ps.statuses[repoIndex] = "completed"
-		ps.completed[repoIndex] = true
-	case "error":
-		ps.statuses[repoIndex] = fmt.Sprintf("failed: %s", errorMsg)
-		ps.completed[repoIndex] = true
+	case statusProcessing:
+		ps.statuses[repoIndex] = repoStatus{state: statusProcessing}
+	case statusCompleted:
+		ps.statuses[repoIndex] = repoStatus{state: statusCompleted}
+	case statusFailed:
+		ps.statuses[repoIndex] = repoStatus{state: statusFailed, message: errorMsg}
 	}
 
 	ps.render()
 }
 
+func (ps *ProgressState) findRepoIndex(relPath string) int {
+	for i, repo := range ps.repos {
+		if repo.RelPath == relPath {
+			return i
+		}
+	}
+	return -1
+}
+
 func (ps *ProgressState) render() {
+	if ps.supportsANSI {
+		ps.renderANSI()
+	} else {
+		ps.renderSimple()
+	}
+}
+
+func (ps *ProgressState) renderANSI() {
 	// Move cursor up to overwrite previous output
 	if ps.linesDrawn > 0 {
-		fmt.Printf("\033[%dA", ps.linesDrawn)
+		fmt.Fprintf(ps.writer, "\033[%dA", ps.linesDrawn)
 	}
-
-	// Count statuses
-	waiting, processing, ok, failed := 0, 0, 0, 0
 
 	lines := 0
-	fmt.Printf("Progress: Switching branches...\n")
+	waiting, processing, completed, failed := ps.countStatuses()
+
+	fmt.Fprintf(ps.writer, "Progress: Switching branches...\n")
 	lines++
 
-	// Show first few repos with status
-	maxShow := 30
-	if len(ps.repos) < maxShow {
-		maxShow = len(ps.repos)
-	}
-
-	for i := 0; i < maxShow; i++ {
-		var icon string
-		status := ps.statuses[i]
-
-		switch {
-		case status == "waiting":
-			icon = "⏳"
-			waiting++
-		case strings.HasPrefix(status, "processing"):
-			icon = "🔄"
-			processing++
-		case status == "completed":
-			icon = "✅"
-			ok++
-		case strings.HasPrefix(status, "failed:"):
-			icon = "❌"
-			failed++
-		default:
-			icon = "⏳"
-			waiting++
-		}
-
-		fmt.Printf("[%d] %s %s - %s\033[K\n", i+1, icon, ps.repos[i].RelPath, status)
+	// Show first N repos with status
+	displayCount := min(maxDisplayedRepos, len(ps.repos))
+	for i := 0; i < displayCount; i++ {
+		icon := ps.getStatusIcon(ps.statuses[i].state)
+		statusText := ps.formatStatus(ps.statuses[i])
+		fmt.Fprintf(ps.writer, "[%d] %s %s - %s\033[K\n", i+1, icon, ps.repos[i].RelPath, statusText)
 		lines++
 	}
 
-	// Count remaining repos if we're showing limited view
-	if len(ps.repos) > maxShow {
-		for i := maxShow; i < len(ps.repos); i++ {
-			status := ps.statuses[i]
-			switch {
-			case status == "waiting":
-				waiting++
-			case strings.HasPrefix(status, "processing"):
-				processing++
-			case status == "completed":
-				ok++
-			case strings.HasPrefix(status, "failed:"):
-				failed++
-			default:
-				waiting++
-			}
-		}
-
-		fmt.Printf("... and %d more repos\n", len(ps.repos)-maxShow)
+	// Show summary for remaining repos
+	if len(ps.repos) > maxDisplayedRepos {
+		fmt.Fprintf(ps.writer, "... and %d more repos\n", len(ps.repos)-maxDisplayedRepos)
 		lines++
 	}
 
-	fmt.Printf("Status: %d waiting, %d processing, %d done, %d failed (%d/%d)\n",
-		waiting, processing, ok, failed, ok+failed, ps.totalRepos)
+	fmt.Fprintf(ps.writer, "Status: %d waiting, %d processing, %d done, %d failed (%d/%d)\n",
+		waiting, processing, completed, failed, completed+failed, ps.totalRepos)
 	lines++
 
 	// Clear any remaining lines from previous render
 	if lines < ps.linesDrawn {
 		for i := lines; i < ps.linesDrawn; i++ {
-			fmt.Printf("\033[K\n") // Clear line
+			fmt.Fprintf(ps.writer, "\033[K\n")
 		}
-		fmt.Printf("\033[%dA", ps.linesDrawn-lines) // Move back up
+		fmt.Fprintf(ps.writer, "\033[%dA", ps.linesDrawn-lines)
 	}
 
 	ps.linesDrawn = lines
 }
 
-func switchBranches(root, target string, workers int) {
-	repos, err := findGitRepos(root)
+func (ps *ProgressState) renderSimple() {
+	waiting, processing, completed, failed := ps.countStatuses()
+	fmt.Fprintf(ps.writer, "Progress: %d waiting, %d processing, %d done, %d failed (%d/%d)\n",
+		waiting, processing, completed, failed, completed+failed, ps.totalRepos)
+}
+
+func (ps *ProgressState) countStatuses() (waiting, processing, completed, failed int) {
+	for _, status := range ps.statuses {
+		switch status.state {
+		case statusWaiting:
+			waiting++
+		case statusProcessing:
+			processing++
+		case statusCompleted:
+			completed++
+		case statusFailed:
+			failed++
+		}
+	}
+	return
+}
+
+func (ps *ProgressState) getStatusIcon(state string) string {
+	switch state {
+	case statusWaiting:
+		return "⏳"
+	case statusProcessing:
+		return "🔄"
+	case statusCompleted:
+		return "✅"
+	case statusFailed:
+		return "❌"
+	default:
+		return "⏳"
+	}
+}
+
+func (ps *ProgressState) formatStatus(status repoStatus) string {
+	switch status.state {
+	case statusWaiting:
+		return "waiting"
+	case statusProcessing:
+		return "processing..."
+	case statusCompleted:
+		return "completed"
+	case statusFailed:
+		if status.message != "" {
+			return fmt.Sprintf("failed: %s", status.message)
+		}
+		return "failed"
+	default:
+		return "unknown"
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func switchBranches(root, target string, workers int, cfg *Config) {
+	repos, err := findGitRepos(root, cfg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(1)
@@ -180,16 +249,16 @@ func switchBranches(root, target string, workers int) {
 			defer wg.Done()
 			for r := range repoCh {
 				// Update to processing
-				progress.UpdateStatus(r.RelPath, "processing", "")
+				progress.UpdateStatus(r.RelPath, statusProcessing, "")
 
 				// Process repo
 				res := processSingleRepo(r, target)
 
 				// Update completion status
 				if res.Success {
-					progress.UpdateStatus(r.RelPath, "ok", "")
+					progress.UpdateStatus(r.RelPath, statusCompleted, "")
 				} else {
-					progress.UpdateStatus(r.RelPath, "error", res.Error)
+					progress.UpdateStatus(r.RelPath, statusFailed, res.Error)
 				}
 
 				resCh <- res

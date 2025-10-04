@@ -9,38 +9,62 @@ import (
 	"sync"
 )
 
+const (
+	branchStateNoCommits = "no commits"
+	branchStateDetached  = "detached"
+)
+
 type BranchResult struct {
 	RelPath string
 	Branch  string
 	Error   error
 }
 
-func getBranch(path string) (string, error) {
-	cmds := [][]string{
-		{"git", "branch", "--show-current"},
-		{"git", "rev-parse", "--abbrev-ref", "HEAD"},
-	}
-	for _, args := range cmds {
-		cmd := exec.Command(args[0], args[1:]...)
-		cmd.Dir = path
-		if out, err := cmd.Output(); err == nil {
-			b := strings.TrimSpace(string(out))
-			if b != "" && b != "HEAD" {
-				return b, nil
-			}
-		}
-	}
-	cmd := exec.Command("git", "log", "-1", "--oneline")
-	cmd.Dir = path
-	if err := cmd.Run(); err != nil {
-		return "no commits", nil
-	}
-	return "detached", nil
+type CommandResult struct {
+	RelPath string
+	Output  string
+	Error   error
 }
 
-func listAllBranches(root string, workers int) {
+// getBranch returns the current branch name for a git repository.
+// Returns special states for repositories without commits or in detached HEAD state.
+func getBranch(path string) (string, error) {
+	// Try modern git command first (git 2.22+)
+	cmd := exec.Command("git", "branch", "--show-current")
+	cmd.Dir = path
+	if out, err := cmd.Output(); err == nil {
+		if branch := strings.TrimSpace(string(out)); branch != "" {
+			return branch, nil
+		}
+	}
+
+	// Fallback to symbolic-ref for older git versions
+	cmd = exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	cmd.Dir = path
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("failed to get branch: %w", err)
+	}
+
+	branch := strings.TrimSpace(string(out))
+	if branch == "HEAD" {
+		// Check if repo has any commits
+		cmd = exec.Command("git", "rev-parse", "--verify", "HEAD")
+		cmd.Dir = path
+		if err := cmd.Run(); err != nil {
+			return branchStateNoCommits, nil
+		}
+		return branchStateDetached, nil
+	}
+
+	return branch, nil
+}
+
+// listAllBranches discovers all git repositories and displays their current branches
+// grouped by branch name. Uses concurrent workers for faster processing.
+func listAllBranches(root string, workers int, cfg *Config) {
 	fmt.Printf("Discovering repos in %s...\n", root)
-	repos, err := findGitRepos(root)
+	repos, err := findGitRepos(root, cfg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(1)
@@ -98,5 +122,84 @@ func listAllBranches(root string, workers int) {
 			fmt.Println(repo)
 		}
 		fmt.Println("=================")
+	}
+}
+
+// executeCommandInRepos executes a git command across all discovered repositories
+// concurrently. Results are displayed with success/failure indicators.
+func executeCommandInRepos(root, command string, workers int, cfg *Config) {
+	fmt.Printf("Discovering repos in %s...\n", root)
+	repos, err := findGitRepos(root, cfg)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error:", err)
+		os.Exit(1)
+	}
+	if len(repos) == 0 {
+		fmt.Println("No repos found")
+		return
+	}
+
+	// Split the command into arguments
+	args := strings.Fields(command)
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "Error: Empty command")
+		os.Exit(1)
+	}
+
+	fmt.Printf("Executing 'git %s' in %d repos with %d workers...\n", command, len(repos), workers)
+
+	repoCh := make(chan RepoInfo, len(repos))
+	resCh := make(chan CommandResult, len(repos))
+
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for r := range repoCh {
+				// Execute the git command
+				cmd := exec.Command("git", args...)
+				cmd.Dir = r.Path
+				output, err := cmd.CombinedOutput()
+
+				resCh <- CommandResult{
+					RelPath: r.RelPath,
+					Output:  string(output),
+					Error:   err,
+				}
+			}
+		}()
+	}
+	go func() {
+		for _, r := range repos {
+			repoCh <- r
+		}
+		close(repoCh)
+	}()
+	go func() {
+		wg.Wait()
+		close(resCh)
+	}()
+
+	// Collect and display results
+	success, failed := 0, 0
+	for res := range resCh {
+		if res.Error != nil {
+			fmt.Printf("❌ %s:\n%s\n%s\n", res.RelPath, res.Output, res.Error)
+			failed++
+		} else {
+			if strings.TrimSpace(res.Output) != "" {
+				fmt.Printf("✅ %s:\n%s\n", res.RelPath, res.Output)
+			} else {
+				fmt.Printf("✅ %s: OK\n", res.RelPath)
+			}
+			success++
+		}
+	}
+
+	fmt.Printf("\n--- Summary ---\n")
+	fmt.Printf("Executed 'git %s' in %d repos: %d succeeded, %d failed\n", command, success+failed, success, failed)
+	if failed > 0 {
+		os.Exit(1)
 	}
 }

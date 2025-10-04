@@ -1,6 +1,8 @@
 BINARY := gb
 PKG := ./cmd/gb
 DIST := bin/release
+VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+LDFLAGS := -ldflags "-s -w -X github.com/ntancardoso/gb/internal/core.version=$(VERSION)"
 
 .PHONY: all build clean test lint snapshot release dist
 
@@ -9,8 +11,8 @@ all: build
 
 ## Build for the current OS/Arch
 build:
-	@echo "Building $(BINARY) for current OS/ARCH..."
-	go build -o bin/$(BINARY) $(PKG)
+	@echo "Building $(BINARY) $(VERSION) for current OS/ARCH..."
+	go build $(LDFLAGS) -o bin/$(BINARY) $(PKG)
 
 ## Clean build artifacts
 clean:

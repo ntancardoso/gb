@@ -29,9 +29,6 @@ type repoStatus struct {
 	message string
 }
 
-// ProgressState tracks and displays the progress of branch switching operations
-// across multiple repositories. It supports both ANSI-capable terminals with
-// live updates and simple terminals with periodic status messages.
 type ProgressState struct {
 	repos        []RepoInfo
 	statuses     []repoStatus
@@ -57,14 +54,11 @@ func NewProgressState(repos []RepoInfo) *ProgressState {
 	}
 }
 
-// supportsANSI checks if the terminal supports ANSI escape codes
 func supportsANSI() bool {
-	// Check if stdout is a terminal
 	if fileInfo, _ := os.Stdout.Stat(); (fileInfo.Mode() & os.ModeCharDevice) == 0 {
 		return false
 	}
 
-	// On Windows, check for TERM or WT_SESSION (Windows Terminal)
 	term := os.Getenv("TERM")
 	if term != "" && term != "dumb" {
 		return true
@@ -80,13 +74,11 @@ func (ps *ProgressState) UpdateStatus(relPath, status, errorMsg string) {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
-	// Find repo index
 	repoIndex := ps.findRepoIndex(relPath)
 	if repoIndex == -1 {
 		return
 	}
 
-	// Update status
 	switch status {
 	case statusProcessing:
 		ps.statuses[repoIndex] = repoStatus{state: statusProcessing}
@@ -117,7 +109,6 @@ func (ps *ProgressState) render() {
 }
 
 func (ps *ProgressState) renderANSI() {
-	// Move cursor up to overwrite previous output
 	if ps.linesDrawn > 0 {
 		fmt.Fprintf(ps.writer, "\033[%dA", ps.linesDrawn)
 	}
@@ -128,7 +119,6 @@ func (ps *ProgressState) renderANSI() {
 	fmt.Fprintf(ps.writer, "Progress: Switching branches...\n")
 	lines++
 
-	// Show first N repos with status
 	displayCount := min(maxDisplayedRepos, len(ps.repos))
 	for i := 0; i < displayCount; i++ {
 		icon := ps.getStatusIcon(ps.statuses[i].state)
@@ -137,7 +127,6 @@ func (ps *ProgressState) renderANSI() {
 		lines++
 	}
 
-	// Show summary for remaining repos
 	if len(ps.repos) > maxDisplayedRepos {
 		fmt.Fprintf(ps.writer, "... and %d more repos\n", len(ps.repos)-maxDisplayedRepos)
 		lines++
@@ -147,7 +136,6 @@ func (ps *ProgressState) renderANSI() {
 		waiting, processing, completed, failed, completed+failed, ps.totalRepos)
 	lines++
 
-	// Clear any remaining lines from previous render
 	if lines < ps.linesDrawn {
 		for i := lines; i < ps.linesDrawn; i++ {
 			fmt.Fprintf(ps.writer, "\033[K\n")
@@ -233,28 +221,22 @@ func switchBranches(root, target string, workers int, cfg *Config) {
 
 	fmt.Printf("Found %d repos, switching to %s with %d workers...\n", len(repos), target, workers)
 
-	// Initialize progress state
 	progress := NewProgressState(repos)
-	progress.render() // Initial render
+	progress.render()
 
 	repoCh := make(chan RepoInfo, len(repos))
 	resCh := make(chan SwitchResult, len(repos))
 
 	var wg sync.WaitGroup
 
-	// Workers
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for r := range repoCh {
-				// Update to processing
 				progress.UpdateStatus(r.RelPath, statusProcessing, "")
-
-				// Process repo
 				res := processSingleRepo(r, target)
 
-				// Update completion status
 				if res.Success {
 					progress.UpdateStatus(r.RelPath, statusCompleted, "")
 				} else {
@@ -266,7 +248,6 @@ func switchBranches(root, target string, workers int, cfg *Config) {
 		}()
 	}
 
-	// Send repos to workers
 	go func() {
 		for _, r := range repos {
 			repoCh <- r
@@ -274,13 +255,11 @@ func switchBranches(root, target string, workers int, cfg *Config) {
 		close(repoCh)
 	}()
 
-	// Wait for workers and close results
 	go func() {
 		wg.Wait()
 		close(resCh)
 	}()
 
-	// Collect results
 	var ok, fail int
 	var failed []string
 	for res := range resCh {
@@ -292,7 +271,6 @@ func switchBranches(root, target string, workers int, cfg *Config) {
 		}
 	}
 
-	// Move past the progress display
 	fmt.Printf("\n\n--- Summary ---\n")
 	fmt.Printf("Switched %d repos to %s\n", ok, target)
 	if fail > 0 {
@@ -312,15 +290,12 @@ func processSingleRepo(repo RepoInfo, targetBranch string) SwitchResult {
 	branchExists := localCheck.Run() == nil
 
 	if !branchExists {
-		// Check if branch exists remotely
 		remoteCheck := exec.Command("git", "ls-remote", "--exit-code", "--heads", "origin", targetBranch)
 		remoteCheck.Dir = repo.Path
 		if remoteCheck.Run() == nil {
-			// Detect shallow repo
 			out, err := exec.Command("git", "rev-parse", "--is-shallow-repository").Output()
 			isShallow := err == nil && strings.TrimSpace(string(out)) == "true"
 
-			// Fetch branch
 			args := []string{"fetch", "origin"}
 			if isShallow {
 				args = append(args, "--depth=1")
@@ -342,13 +317,11 @@ func processSingleRepo(repo RepoInfo, targetBranch string) SwitchResult {
 		}
 	}
 
-	// Try normal switch
 	switchCmd := exec.Command("git", "switch", targetBranch)
 	switchCmd.Dir = repo.Path
 	if out, err := switchCmd.CombinedOutput(); err == nil {
 		return SwitchResult{RelPath: repo.RelPath, Success: true}
 	} else {
-		// Try to create tracking branch from remote
 		trackCmd := exec.Command("git", "switch", "-c", targetBranch, "--track", "origin/"+targetBranch)
 		trackCmd.Dir = repo.Path
 		if out2, err2 := trackCmd.CombinedOutput(); err2 == nil {

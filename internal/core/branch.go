@@ -26,10 +26,7 @@ type CommandResult struct {
 	Error   error
 }
 
-// getBranch returns the current branch name for a git repository.
-// Returns special states for repositories without commits or in detached HEAD state.
 func getBranch(path string) (string, error) {
-	// Try modern git command first (git 2.22+)
 	cmd := exec.Command("git", "branch", "--show-current")
 	cmd.Dir = path
 	if out, err := cmd.Output(); err == nil {
@@ -38,7 +35,6 @@ func getBranch(path string) (string, error) {
 		}
 	}
 
-	// Fallback to symbolic-ref for older git versions
 	cmd = exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
 	cmd.Dir = path
 	out, err := cmd.Output()
@@ -48,7 +44,6 @@ func getBranch(path string) (string, error) {
 
 	branch := strings.TrimSpace(string(out))
 	if branch == "HEAD" {
-		// Check if repo has any commits
 		cmd = exec.Command("git", "rev-parse", "--verify", "HEAD")
 		cmd.Dir = path
 		if err := cmd.Run(); err != nil {
@@ -60,8 +55,6 @@ func getBranch(path string) (string, error) {
 	return branch, nil
 }
 
-// listAllBranches discovers all git repositories and displays their current branches
-// grouped by branch name. Uses concurrent workers for faster processing.
 func listAllBranches(root string, workers int, cfg *Config) {
 	fmt.Printf("Discovering repos in %s...\n", root)
 	repos, err := findGitRepos(root, cfg)
@@ -125,8 +118,6 @@ func listAllBranches(root string, workers int, cfg *Config) {
 	}
 }
 
-// executeCommandInRepos executes a git command across all discovered repositories
-// concurrently. Results are displayed with success/failure indicators.
 func executeCommandInRepos(root, command string, workers int, cfg *Config) {
 	fmt.Printf("Discovering repos in %s...\n", root)
 	repos, err := findGitRepos(root, cfg)
@@ -139,7 +130,6 @@ func executeCommandInRepos(root, command string, workers int, cfg *Config) {
 		return
 	}
 
-	// Split the command into arguments
 	args := strings.Fields(command)
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "Error: Empty command")
@@ -157,7 +147,6 @@ func executeCommandInRepos(root, command string, workers int, cfg *Config) {
 		go func() {
 			defer wg.Done()
 			for r := range repoCh {
-				// Execute the git command
 				cmd := exec.Command("git", args...)
 				cmd.Dir = r.Path
 				output, err := cmd.CombinedOutput()
@@ -181,7 +170,6 @@ func executeCommandInRepos(root, command string, workers int, cfg *Config) {
 		close(resCh)
 	}()
 
-	// Collect and display results
 	success, failed := 0, 0
 	for res := range resCh {
 		if res.Error != nil {

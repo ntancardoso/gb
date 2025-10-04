@@ -70,7 +70,7 @@ sudo mv gb /usr/local/bin/
 ### Basic Commands
 
 ```bash
-gb <options> <branch_name>
+gb [options] <branch_name>
 ```
 
 **Switch all repositories to a branch:**
@@ -82,33 +82,51 @@ gb feature-branch
 
 **List all current branches:**
 ```bash
-gb -list
+gb -l              # Short form
+gb --list          # Long form
 ```
 
 **Execute a git command in all repositories:**
 ```bash
-gb -c "status"
-gb -c "fetch origin"
+gb -c "status"           # Short form
+gb --cmd "fetch origin"  # Long form
 gb -c "pull"
+```
+
+**Get help:**
+```bash
+gb -h              # Short form
+gb --help          # Long form
+```
+
+**Show version:**
+```bash
+gb -v              # Short form
+gb --version       # Long form
 ```
 
 ### Advanced Options
 
 ```bash
 # Use more workers for faster processing
-gb -workers 50 15.0
+gb -w 50 15.0              # Short form
+gb --workers 50 15.0       # Long form
 
 # Skip additional directories
-gb -skipDirs "build,dist,temp" 15.0
+gb -s "build,dist,temp" 15.0        # Short form
+gb --skipDirs "build,dist,temp" 15.0  # Long form
 
 # Include normally skipped directories
-gb -includeDirs "vendor,node_modules" -list
+gb -i "vendor,node_modules" -l           # Short form
+gb --includeDirs "vendor,node_modules" --list  # Long form
 
-# Combine options
-gb -workers 10 -includeDirs "custom-vendor" 16.0
+# Combine options (mix short and long forms)
+gb -w 10 --includeDirs "custom-vendor" 16.0
+gb --workers 10 -i "custom-vendor" 16.0
 
 # Execute command with custom workers count
-gb -c "status" -workers 30
+gb -c "status" -w 30
+gb --cmd "status" --workers 30
 ```
 
 ### Full Command Reference
@@ -117,20 +135,24 @@ gb -c "status" -workers 30
 Usage: gb [options] <branch_name>
 
 Options:
-  -list                    List all branches found in repositories
-  -c string                Execute a git command in all repositories
-  -workers int             Number of concurrent workers (default 20)
-  -skipDirs string         Comma-separated list of directories to skip (overrides defaults)
-  -includeDirs string      Comma-separated list of directories to include (removes them from skipDirs)
+  -h, --help              Show this help message
+  -v, --version           Show version information
+  -l, --list              List all branches found in repositories
+  -c, --cmd string        Execute a git command in all repositories
+  -w, --workers int       Number of concurrent workers (default 20)
+  -s, --skipDirs string   Comma-separated list of directories to skip
+  -i, --includeDirs string
+                          Comma-separated list of directories to include
 
 Examples:
-  gb main                  Switch all repos to main branch
-  gb -list                 List all current branches
-  gb -workers 50 -list     Fast branch listing with 50 workers
-  gb -workers 5 main       Switch with 5 concurrent workers
-  gb -includeDirs "vendor,dist" 15.0  Include normally skipped directories
-  gb -c "status"           Execute 'git status' in all repositories
-  gb -c "fetch origin"     Execute 'git fetch origin' in all repositories
+  gb main                      Switch all repos to main branch
+  gb -l                        List all current branches
+  gb --list                    List all current branches
+  gb -w 50 -l                  Fast branch listing with 50 workers
+  gb --workers 5 main          Switch with 5 concurrent workers
+  gb -i "vendor,dist" 15.0     Include normally skipped directories
+  gb -c "status"               Execute 'git status' in all repositories
+  gb --cmd "fetch origin"      Execute 'git fetch origin' in all repositories
 ```
 
 ## Typical Odoo Workflow
@@ -142,7 +164,9 @@ cd ~/odoo-projects
 
 2. **Check current branch status:**
 ```bash
-gb -list
+gb -l
+# or
+gb --list
 ```
 
 3. **Synchronize all repositories to version 15.0:**
@@ -152,13 +176,15 @@ gb 15.0
 
 4. **Switch to development branch with progress monitoring:**
 ```bash
-gb -workers 10 development
+gb -w 10 development
+# or
+gb --workers 10 development
 ```
 
 5. **Execute git commands across all repositories:**
 ```bash
 gb -c "status"
-gb -c "fetch origin"
+gb --cmd "fetch origin"
 ```
 
 ## How It Works
@@ -181,7 +207,7 @@ By default, gb skips these directories to improve performance:
 - `__pycache__`, `.pytest_cache`, `.tox`
 - `.venv`, `venv`, `.env`, `env`
 
-Use `-includeDirs` to include specific directories or `-skipDirs` to override the defaults.
+Use `-i` / `--includeDirs` to include specific directories or `-s` / `--skipDirs` to override the defaults.
 
 ## Error Handling
 

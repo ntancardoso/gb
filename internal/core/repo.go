@@ -9,22 +9,17 @@ import (
 	"time"
 )
 
-// RepoInfo contains information about a discovered git repository.
 type RepoInfo struct {
-	Path    string // Absolute path to the repository
-	RelPath string // Path relative to the scan root
+	Path    string
+	RelPath string
 }
 
-// resolveRoot normalizes root path for Windows junctions and WSL symlinks.
-// Returns the resolved path and a boolean indicating if resolution occurred.
 func resolveRoot(root string) string {
-	// First try EvalSymlinks (handles junctions/symlinks generally)
 	if realRoot, err := filepath.EvalSymlinks(root); err == nil && realRoot != root {
 		fmt.Printf("Resolved symlink to: %s\n", realRoot)
 		return realRoot
 	}
 
-	// If still unresolved, try os.Readlink directly (covers WSL cases)
 	if target, err := os.Readlink(root); err == nil {
 		resolved := resolveSymlinkTarget(root, target)
 		if resolved != root {
@@ -33,19 +28,15 @@ func resolveRoot(root string) string {
 		return resolved
 	}
 
-	// Nothing to resolve
 	return root
 }
 
-// resolveSymlinkTarget handles different symlink target formats
 func resolveSymlinkTarget(root, target string) string {
-	// Handle WSL-style paths: /x/path → X:\path
 	if len(target) > 3 && target[0] == '/' && target[2] == '/' {
 		driveLetter := strings.ToUpper(string(target[1]))
 		return driveLetter + ":" + strings.ReplaceAll(target[2:], "/", "\\")
 	}
 
-	// Handle relative symlinks
 	if !filepath.IsAbs(target) {
 		return filepath.Join(filepath.Dir(root), target)
 	}
@@ -54,17 +45,14 @@ func resolveSymlinkTarget(root, target string) string {
 }
 
 func (cfg *Config) shouldSkipDir(name string) bool {
-	// Check if explicitly included
 	if _, included := cfg.includeSet[name]; included {
 		return false
 	}
 
-	// Check if in skip set
 	if _, skip := cfg.skipSet[name]; skip {
 		return true
 	}
 
-	// Skip hidden directories except .git
 	if strings.HasPrefix(name, ".") && name != ".git" {
 		return true
 	}
@@ -76,9 +64,6 @@ const (
 	progressUpdateInterval = 500 * time.Millisecond
 )
 
-// findGitRepos recursively searches for git repositories starting from root.
-// It respects the skip/include configuration and avoids symlink loops.
-// Progress is printed to stdout during scanning.
 func findGitRepos(root string, cfg *Config) ([]RepoInfo, error) {
 	scanner := &repoScanner{
 		cfg:        cfg,
@@ -106,7 +91,6 @@ type repoScanner struct {
 func (s *repoScanner) walkFunc(root string) func(string, os.DirEntry, error) error {
 	return func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			// Log error but continue scanning
 			return nil
 		}
 
@@ -122,7 +106,6 @@ func (s *repoScanner) walkFunc(root string) func(string, os.DirEntry, error) err
 			return filepath.SkipDir
 		}
 
-		// Avoid symlink loops
 		if s.isVisited(path) {
 			s.skipped++
 			return filepath.SkipDir
@@ -130,8 +113,6 @@ func (s *repoScanner) walkFunc(root string) func(string, os.DirEntry, error) err
 
 		s.processed++
 		s.printProgress()
-
-		// Check if this is a git repository
 		if s.isGitRepo(path) {
 			rel, _ := filepath.Rel(root, path)
 			s.repos = append(s.repos, RepoInfo{Path: path, RelPath: rel})

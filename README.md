@@ -27,6 +27,7 @@ Designed specifically for Odoo developers to:
 - **Smart Branch Detection**: Handles local branches, remote tracking, and shallow repositories
 - **Flexible Filtering**: Skip or include specific directories with customizable rules
 - **Branch Listing**: View all current branches across repositories
+- **Command Execution**: Execute arbitrary git commands across all repositories
 - **Detailed Reporting**: Shows progress and summarizes results
 - **Cross-Platform**: Works on Windows, Linux, and macOS with symlink/junction support
 
@@ -84,6 +85,13 @@ gb feature-branch
 gb -list
 ```
 
+**Execute a git command in all repositories:**
+```bash
+gb -c "status"
+gb -c "fetch origin"
+gb -c "pull"
+```
+
 ### Advanced Options
 
 ```bash
@@ -98,6 +106,9 @@ gb -includeDirs "vendor,node_modules" -list
 
 # Combine options
 gb -workers 10 -includeDirs "custom-vendor" 16.0
+
+# Execute command with custom workers count
+gb -c "status" -workers 30
 ```
 
 ### Full Command Reference
@@ -107,6 +118,7 @@ Usage: gb [options] <branch_name>
 
 Options:
   -list                    List all branches found in repositories
+  -c string                Execute a git command in all repositories
   -workers int             Number of concurrent workers (default 20)
   -skipDirs string         Comma-separated list of directories to skip (overrides defaults)
   -includeDirs string      Comma-separated list of directories to include (removes them from skipDirs)
@@ -117,6 +129,8 @@ Examples:
   gb -workers 50 -list     Fast branch listing with 50 workers
   gb -workers 5 main       Switch with 5 concurrent workers
   gb -includeDirs "vendor,dist" 15.0  Include normally skipped directories
+  gb -c "status"           Execute 'git status' in all repositories
+  gb -c "fetch origin"     Execute 'git fetch origin' in all repositories
 ```
 
 ## Typical Odoo Workflow
@@ -139,6 +153,12 @@ gb 15.0
 4. **Switch to development branch with progress monitoring:**
 ```bash
 gb -workers 10 development
+```
+
+5. **Execute git commands across all repositories:**
+```bash
+gb -c "status"
+gb -c "fetch origin"
 ```
 
 ## How It Works
@@ -169,6 +189,7 @@ Use `-includeDirs` to include specific directories or `-skipDirs` to override th
 - **Switch failures**: Shows detailed error messages for failed operations
 - **Permission issues**: Handles repository access problems gracefully
 - **Network issues**: Manages remote fetch failures appropriately
+- **Command execution failures**: Shows detailed error messages for failed git commands
 
 ## Requirements
 

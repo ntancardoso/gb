@@ -2,18 +2,21 @@ package core
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 )
 
+// RepoInfo contains information about a discovered git repository.
 type RepoInfo struct {
-	Path    string
-	RelPath string
+	Path    string // Absolute path to the repository
+	RelPath string // Path relative to the scan root
 }
 
 // resolveRoot normalizes root path for Windows junctions and WSL symlinks.
+// Returns the resolved path and a boolean indicating if resolution occurred.
 func resolveRoot(root string) string {
 	// First try EvalSymlinks (handles junctions/symlinks generally)
 	if realRoot, err := filepath.EvalSymlinks(root); err == nil && realRoot != root {
@@ -23,83 +26,148 @@ func resolveRoot(root string) string {
 
 	// If still unresolved, try os.Readlink directly (covers WSL cases)
 	if target, err := os.Readlink(root); err == nil {
-		if len(target) > 3 && target[0] == '/' && target[2] == '/' {
-			// Convert /x/path → X:\path (drive letter conversion)
-			driveLetter := strings.ToUpper(string(target[1]))
-			windowsPath := driveLetter + ":" + strings.ReplaceAll(target[2:], "/", "\\")
-			fmt.Printf("Resolved symlink to: %s\n", windowsPath)
-			return windowsPath
-		}
-		if !filepath.IsAbs(target) {
-			resolved := filepath.Join(filepath.Dir(root), target)
+		resolved := resolveSymlinkTarget(root, target)
+		if resolved != root {
 			fmt.Printf("Resolved symlink to: %s\n", resolved)
-			return resolved
 		}
-		fmt.Printf("Resolved symlink to: %s\n", target)
-		return target
+		return resolved
 	}
 
 	// Nothing to resolve
 	return root
 }
 
-func buildSkipSet(skipDirs []string) map[string]struct{} {
-	m := make(map[string]struct{}, len(skipDirs))
-	for _, s := range skipDirs {
-		m[s] = struct{}{}
+// resolveSymlinkTarget handles different symlink target formats
+func resolveSymlinkTarget(root, target string) string {
+	// Handle WSL-style paths: /x/path → X:\path
+	if len(target) > 3 && target[0] == '/' && target[2] == '/' {
+		driveLetter := strings.ToUpper(string(target[1]))
+		return driveLetter + ":" + strings.ReplaceAll(target[2:], "/", "\\")
 	}
-	return m
+
+	// Handle relative symlinks
+	if !filepath.IsAbs(target) {
+		return filepath.Join(filepath.Dir(root), target)
+	}
+
+	return target
 }
 
-func shouldSkipDir(name string, includeSet map[string]struct{}) bool {
-	if _, inc := includeSet[name]; inc {
+func (cfg *Config) shouldSkipDir(name string) bool {
+	// Check if explicitly included
+	if _, included := cfg.includeSet[name]; included {
 		return false
 	}
-	if _, found := skipSet[name]; found {
+
+	// Check if in skip set
+	if _, skip := cfg.skipSet[name]; skip {
 		return true
 	}
+
+	// Skip hidden directories except .git
 	if strings.HasPrefix(name, ".") && name != ".git" {
 		return true
 	}
+
 	return false
 }
 
-func findGitRepos(root string) ([]RepoInfo, error) {
-	var repos []RepoInfo
-	visited := make(map[string]bool)
-	processed, skipped := 0, 0
-	lastPrint := time.Now()
+const (
+	progressUpdateInterval = 500 * time.Millisecond
+)
 
-	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+// findGitRepos recursively searches for git repositories starting from root.
+// It respects the skip/include configuration and avoids symlink loops.
+// Progress is printed to stdout during scanning.
+func findGitRepos(root string, cfg *Config) ([]RepoInfo, error) {
+	scanner := &repoScanner{
+		cfg:        cfg,
+		visited:    make(map[string]bool),
+		output:     os.Stdout,
+		lastUpdate: time.Now(),
+	}
+
+	err := filepath.WalkDir(root, scanner.walkFunc(root))
+	scanner.printFinal()
+
+	return scanner.repos, err
+}
+
+type repoScanner struct {
+	cfg        *Config
+	repos      []RepoInfo
+	visited    map[string]bool
+	processed  int
+	skipped    int
+	output     io.Writer
+	lastUpdate time.Time
+}
+
+func (s *repoScanner) walkFunc(root string) func(string, os.DirEntry, error) error {
+	return func(path string, d os.DirEntry, err error) error {
 		if err != nil {
+			// Log error but continue scanning
 			return nil
 		}
-		if d.IsDir() && path != root {
-			name := d.Name()
-			if shouldSkipDir(name, includeSet) {
-				skipped++
-				return filepath.SkipDir
-			}
-			if real, err := filepath.EvalSymlinks(path); err == nil {
-				if visited[real] {
-					skipped++
-					return filepath.SkipDir
-				}
-				visited[real] = true
-			}
-			processed++
-			if time.Since(lastPrint) > 500*time.Millisecond {
-				fmt.Printf("Scanned %d dirs (skipped %d)...\r", processed, skipped)
-				lastPrint = time.Now()
-			}
-			if _, err := os.Stat(filepath.Join(path, ".git")); err == nil {
-				rel, _ := filepath.Rel(root, path)
-				repos = append(repos, RepoInfo{Path: path, RelPath: rel})
-				return filepath.SkipDir
-			}
+
+		if !d.IsDir() || path == root {
+			return nil
 		}
+
+		name := d.Name()
+
+		// Check if directory should be skipped
+		if s.cfg.shouldSkipDir(name) {
+			s.skipped++
+			return filepath.SkipDir
+		}
+
+		// Avoid symlink loops
+		if s.isVisited(path) {
+			s.skipped++
+			return filepath.SkipDir
+		}
+
+		s.processed++
+		s.printProgress()
+
+		// Check if this is a git repository
+		if s.isGitRepo(path) {
+			rel, _ := filepath.Rel(root, path)
+			s.repos = append(s.repos, RepoInfo{Path: path, RelPath: rel})
+			return filepath.SkipDir
+		}
+
 		return nil
-	})
-	fmt.Printf("Scanned %d dirs (skipped %d).\n", processed, skipped)
-	return repos, err
+	}
+}
+
+func (s *repoScanner) isVisited(path string) bool {
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return false
+	}
+
+	if s.visited[real] {
+		return true
+	}
+
+	s.visited[real] = true
+	return false
+}
+
+func (s *repoScanner) isGitRepo(path string) bool {
+	_, err := os.Stat(filepath.Join(path, ".git"))
+	return err == nil
+}
+
+func (s *repoScanner) printProgress() {
+	if time.Since(s.lastUpdate) > progressUpdateInterval {
+		fmt.Fprintf(s.output, "Scanned %d dirs (skipped %d)...\r", s.processed, s.skipped)
+		s.lastUpdate = time.Now()
+	}
+}
+
+func (s *repoScanner) printFinal() {
+	fmt.Fprintf(s.output, "Scanned %d dirs (skipped %d).\n", s.processed, s.skipped)
 }

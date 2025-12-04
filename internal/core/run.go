@@ -64,6 +64,9 @@ func Run(args []string) error {
 	runCommand := fs.String("cmd", "", "Execute a git command in all repositories")
 	fs.StringVar(runCommand, "c", "", "Execute a git command (shorthand)")
 
+	runShell := fs.String("shell", "", "Execute a shell command in all repositories")
+	fs.StringVar(runShell, "sh", "", "Execute a shell command (shorthand)")
+
 	workers := fs.Int("workers", defaultWorkers, "Number of concurrent workers")
 	fs.IntVar(workers, "w", defaultWorkers, "Number of concurrent workers (shorthand)")
 
@@ -83,6 +86,7 @@ func Run(args []string) error {
 		fmt.Println("  -v, --version           Show version information")
 		fmt.Println("  -l, --list              List all branches found in repositories")
 		fmt.Println("  -c, --cmd string        Execute a git command in all repositories")
+		fmt.Println("  -sh, --shell string     Execute a shell command in all repositories")
 		fmt.Println("  -w, --workers int       Number of concurrent workers (default 20)")
 		fmt.Println("  -s, --skipDirs string   Comma-separated list of directories to skip")
 		fmt.Println("  -i, --includeDirs string")
@@ -96,6 +100,8 @@ func Run(args []string) error {
 		fmt.Println("  gb -i \"vendor,dist\" 15.0     Include normally skipped directories")
 		fmt.Println("  gb -c \"status\"               Execute 'git status' in all repositories")
 		fmt.Println("  gb --cmd \"fetch origin\"     Execute 'git fetch origin' in all repositories")
+		fmt.Println("  gb -sh \"ls -la\"              Execute 'ls -la' shell command in all repositories")
+		fmt.Println("  gb --shell \"mkdir tmp\"      Execute 'mkdir tmp' shell command in all repositories")
 	}
 
 	if err := fs.Parse(args); err != nil {
@@ -121,6 +127,11 @@ func Run(args []string) error {
 
 	if *runCommand != "" {
 		executeCommandInRepos(root, *runCommand, *workers, cfg)
+		return nil
+	}
+
+	if *runShell != "" {
+		executeShellInRepos(root, *runShell, *workers, cfg)
 		return nil
 	}
 

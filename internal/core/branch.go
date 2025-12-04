@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -187,6 +188,84 @@ func executeCommandInRepos(root, command string, workers int, cfg *Config) {
 
 	fmt.Printf("\n--- Summary ---\n")
 	fmt.Printf("Executed 'git %s' in %d repos: %d succeeded, %d failed\n", command, success+failed, success, failed)
+	if failed > 0 {
+		os.Exit(1)
+	}
+}
+
+func executeShellInRepos(root, command string, workers int, cfg *Config) {
+	fmt.Printf("Discovering repos in %s...\n", root)
+	repos, err := findGitRepos(root, cfg)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error:", err)
+		os.Exit(1)
+	}
+	if len(repos) == 0 {
+		fmt.Println("No repos found")
+		return
+	}
+
+	if strings.TrimSpace(command) == "" {
+		fmt.Fprintln(os.Stderr, "Error: Empty command")
+		os.Exit(1)
+	}
+
+	fmt.Printf("Executing '%s' in %d repos with %d workers...\n", command, len(repos), workers)
+
+	repoCh := make(chan RepoInfo, len(repos))
+	resCh := make(chan CommandResult, len(repos))
+
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for r := range repoCh {
+				var cmd *exec.Cmd
+				if runtime.GOOS == "windows" {
+					cmd = exec.Command("cmd", "/c", command)
+				} else {
+					cmd = exec.Command("sh", "-c", command)
+				}
+				cmd.Dir = r.Path
+				output, err := cmd.CombinedOutput()
+
+				resCh <- CommandResult{
+					RelPath: r.RelPath,
+					Output:  string(output),
+					Error:   err,
+				}
+			}
+		}()
+	}
+	go func() {
+		for _, r := range repos {
+			repoCh <- r
+		}
+		close(repoCh)
+	}()
+	go func() {
+		wg.Wait()
+		close(resCh)
+	}()
+
+	success, failed := 0, 0
+	for res := range resCh {
+		if res.Error != nil {
+			fmt.Printf("❌ %s:\n%s\n%s\n", res.RelPath, res.Output, res.Error)
+			failed++
+		} else {
+			if strings.TrimSpace(res.Output) != "" {
+				fmt.Printf("✅ %s:\n%s\n", res.RelPath, res.Output)
+			} else {
+				fmt.Printf("✅ %s: OK\n", res.RelPath)
+			}
+			success++
+		}
+	}
+
+	fmt.Printf("\n--- Summary ---\n")
+	fmt.Printf("Executed '%s' in %d repos: %d succeeded, %d failed\n", command, success+failed, success, failed)
 	if failed > 0 {
 		os.Exit(1)
 	}

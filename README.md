@@ -27,7 +27,8 @@ Designed specifically for Odoo developers to:
 - **Smart Branch Detection**: Handles local branches, remote tracking, and shallow repositories
 - **Flexible Filtering**: Skip or include specific directories with customizable rules
 - **Branch Listing**: View all current branches across repositories
-- **Command Execution**: Execute arbitrary git commands across all repositories
+- **Git Command Execution**: Execute arbitrary git commands across all repositories
+- **Shell Command Execution**: Execute arbitrary shell commands across all repositories
 - **Detailed Reporting**: Shows progress and summarizes results
 - **Cross-Platform**: Works on Windows, Linux, and macOS with symlink/junction support
 
@@ -93,6 +94,14 @@ gb --cmd "fetch origin"  # Long form
 gb -c "pull"
 ```
 
+**Execute a shell command in all repositories:**
+```bash
+gb -sh "ls -la"          # Short form (Unix/Linux/macOS)
+gb -sh "dir"             # Short form (Windows)
+gb --shell "mkdir tmp"   # Long form
+gb -sh "pwd"             # Print working directory
+```
+
 **Get help:**
 ```bash
 gb -h              # Short form
@@ -124,9 +133,13 @@ gb --includeDirs "vendor,node_modules" --list  # Long form
 gb -w 10 --includeDirs "custom-vendor" 16.0
 gb --workers 10 -i "custom-vendor" 16.0
 
-# Execute command with custom workers count
+# Execute git command with custom workers count
 gb -c "status" -w 30
 gb --cmd "status" --workers 30
+
+# Execute shell command with custom workers count
+gb -sh "ls -la" -w 30
+gb --shell "ls -la" --workers 30
 ```
 
 ### Full Command Reference
@@ -139,6 +152,7 @@ Options:
   -v, --version           Show version information
   -l, --list              List all branches found in repositories
   -c, --cmd string        Execute a git command in all repositories
+  -sh, --shell string     Execute a shell command in all repositories
   -w, --workers int       Number of concurrent workers (default 20)
   -s, --skipDirs string   Comma-separated list of directories to skip
   -i, --includeDirs string
@@ -153,6 +167,8 @@ Examples:
   gb -i "vendor,dist" 15.0     Include normally skipped directories
   gb -c "status"               Execute 'git status' in all repositories
   gb --cmd "fetch origin"      Execute 'git fetch origin' in all repositories
+  gb -sh "ls -la"              Execute 'ls -la' shell command in all repositories
+  gb --shell "mkdir tmp"       Execute 'mkdir tmp' shell command in all repositories
 ```
 
 ## Typical Odoo Workflow
@@ -187,10 +203,32 @@ gb -c "status"
 gb --cmd "fetch origin"
 ```
 
+6. **Execute shell commands across all repositories:**
+```bash
+gb -sh "ls -la"
+gb --shell "mkdir tmp"
+```
+
+## Git Commands vs Shell Commands
+
+**Git Commands (`-c` / `--cmd`):**
+- Executes `git <command>` in each repository
+- Example: `gb -c "status"` runs `git status`
+- Example: `gb -c "fetch origin"` runs `git fetch origin`
+- Use this for git-specific operations
+
+**Shell Commands (`-sh` / `--shell`):**
+- Executes raw shell commands in each repository
+- Cross-platform support (automatically uses `sh -c` on Unix/Linux/macOS and `cmd /c` on Windows)
+- Example: `gb -sh "ls -la"` lists files in each repo directory
+- Example: `gb -sh "mkdir tmp"` creates a `tmp` directory in each repo
+- Example: `gb -sh "pwd"` prints the working directory of each repo
+- Use this for file operations, directory management, or any non-git shell command
+
 ## How It Works
 
 1. **Discovery Phase**: Recursively scans directories for Git repositories
-2. **Branch Analysis**: Checks if target branch exists locally or remotely  
+2. **Branch Analysis**: Checks if target branch exists locally or remotely
 3. **Concurrent Switching**: Uses worker pools to process multiple repositories simultaneously
 4. **Smart Fallbacks**: Automatically handles:
    - Creating tracking branches from remote
@@ -216,6 +254,7 @@ Use `-i` / `--includeDirs` to include specific directories or `-s` / `--skipDirs
 - **Permission issues**: Handles repository access problems gracefully
 - **Network issues**: Manages remote fetch failures appropriately
 - **Command execution failures**: Shows detailed error messages for failed git commands
+- **Shell command failures**: Shows detailed error messages for failed shell commands
 
 ## Requirements
 

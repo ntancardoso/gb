@@ -231,6 +231,47 @@ func TestExecuteCommandInReposWithError(t *testing.T) {
 	t.Skip("Skipping test due to intermittent failures")
 }
 
+func TestExecuteShellInRepos(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create repos
+	repo1 := filepath.Join(tmpDir, "repo1")
+	createGitRepo(t, repo1)
+
+	repo2 := filepath.Join(tmpDir, "repo2")
+	createGitRepo(t, repo2)
+
+	// Capture output
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	cfg := newConfig(defaultSkipDirs, nil)
+	executeShellInRepos(tmpDir, "echo test", 2, cfg)
+
+	w.Close()
+	os.Stdout = oldStdout
+
+	buf := make([]byte, 2048)
+	n, _ := r.Read(buf)
+	output := string(buf[:n])
+
+	// Check that both repos are mentioned in the output
+	if !strings.Contains(output, "repo1") || !strings.Contains(output, "repo2") {
+		t.Errorf("expected both repos in output, got: %s", output)
+	}
+
+	// Check for success indicators
+	if !strings.Contains(output, "✅") {
+		t.Errorf("expected success indicators in output, got: %s", output)
+	}
+
+	// Check that the command was executed (should contain "test" in output)
+	if !strings.Contains(output, "test") {
+		t.Errorf("expected command output 'test' in output, got: %s", output)
+	}
+}
+
 func TestRun(t *testing.T) {
 	// Test list flag
 	err := Run([]string{"-list"})
@@ -260,6 +301,13 @@ func TestRun(t *testing.T) {
 
 	// Test command execution flag
 	err = Run([]string{"-c", "status"})
+	if err != nil {
+		// This might fail if no repos are found, which is expected
+		// The important part is that it runs without panicking
+	}
+
+	// Test shell execution flag
+	err = Run([]string{"-sh", "echo test"})
 	if err != nil {
 		// This might fail if no repos are found, which is expected
 		// The important part is that it runs without panicking

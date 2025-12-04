@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(go build:*)"
-    ],
-    "deny": [],
-    "ask": []
-  }
-}

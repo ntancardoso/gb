@@ -23,17 +23,11 @@ builds:
       - "-s -w -X github.com/ntancardoso/gb/internal/core.version={{.Version}}"
 
 archives:
-  - id: tarballs
-    format: tar.gz
+  - id: default
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
-    builds:
-      - gb
-
-  - id: zips
-    format: zip
-    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
-    builds:
-      - gb
+    formats:
+      - zip
+      - tar.gz
 
 release:
   github:
@@ -46,5 +40,5 @@ checksum:
   name_template: "checksums.txt"
 
 snapshot:
-  name_template: "{{ .Tag }}-next"
+  version_template: "{{ .Tag }}-next"
 

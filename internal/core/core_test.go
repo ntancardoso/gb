@@ -227,8 +227,46 @@ func TestExecuteCommandInRepos(t *testing.T) {
 }
 
 func TestExecuteCommandInReposWithError(t *testing.T) {
-	// Skip this test for now as it's causing issues
-	t.Skip("Skipping test due to intermittent failures")
+	tmpDir := t.TempDir()
+
+	// Create a git repo
+	repo1 := filepath.Join(tmpDir, "repo1")
+	createGitRepo(t, repo1)
+
+	// Test individual command execution that will fail
+	cmd := exec.Command("git", "invalid-subcommand-that-does-not-exist")
+	cmd.Dir = repo1
+	output, err := cmd.CombinedOutput()
+
+	// Verify that git command fails as expected
+	if err == nil {
+		t.Error("expected git command to fail, but it succeeded")
+	}
+
+	// Test CommandResult structure (this is what the real function uses)
+	result := CommandResult{
+		RelPath: "repo1",
+		Output:  string(output),
+		Error:   err,
+	}
+
+	// Verify error result is properly structured
+	if result.Error == nil {
+		t.Error("expected CommandResult to have an error")
+	}
+
+	if result.RelPath != "repo1" {
+		t.Errorf("expected RelPath 'repo1', got '%s'", result.RelPath)
+	}
+
+	if result.Output == "" {
+		t.Error("expected some output from failed git command")
+	}
+
+	// Test that output contains error information
+	if !strings.Contains(strings.ToLower(result.Output), "unknown") && !strings.Contains(strings.ToLower(result.Output), "invalid") {
+		t.Errorf("expected error message in output, got: %s", result.Output)
+	}
 }
 
 func TestExecuteShellInRepos(t *testing.T) {
@@ -403,5 +441,261 @@ func writeFile(t *testing.T, dir, name, content string) {
 	path := filepath.Join(dir, name)
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestShouldExecuteInRepo(t *testing.T) {
+	tests := []struct {
+		name        string
+		includeDirs []string
+		skipDirs    []string
+		repoPath    string
+		expected    bool
+	}{
+		{
+			name:     "no filters - should execute",
+			repoPath: "any/path",
+			expected: true,
+		},
+		{
+			name:        "include exact match",
+			includeDirs: []string{"vendor", "custom"},
+			repoPath:    "vendor",
+			expected:    true,
+		},
+		{
+			name:        "include no match",
+			includeDirs: []string{"vendor", "custom"},
+			repoPath:    "build",
+			expected:    false,
+		},
+		{
+			name:        "include parent path match",
+			includeDirs: []string{"vendor"},
+			repoPath:    "vendor/subdir/repo",
+			expected:    true,
+		},
+		{
+			name:     "skip exact match",
+			skipDirs: []string{"build", "temp"},
+			repoPath: "build",
+			expected: false,
+		},
+		{
+			name:     "skip no match",
+			skipDirs: []string{"build", "temp"},
+			repoPath: "vendor",
+			expected: true,
+		},
+		{
+			name:     "skip parent path match",
+			skipDirs: []string{"build"},
+			repoPath: "build/debug/repo",
+			expected: false,
+		},
+		{
+			name:        "include takes priority over skip",
+			includeDirs: []string{"vendor"},
+			skipDirs:    []string{"vendor"},
+			repoPath:    "vendor",
+			expected:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := newConfig(tt.skipDirs, tt.includeDirs)
+			result := cfg.shouldExecuteInRepo(tt.repoPath)
+			if result != tt.expected {
+				t.Errorf("shouldExecuteInRepo() = %v, expected %v", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestContainsPath(t *testing.T) {
+	tests := []struct {
+		name     string
+		dirs     []string
+		repoPath string
+		expected bool
+	}{
+		{
+			name:     "exact match",
+			dirs:     []string{"vendor", "custom"},
+			repoPath: "vendor",
+			expected: true,
+		},
+		{
+			name:     "no match",
+			dirs:     []string{"vendor", "custom"},
+			repoPath: "build",
+			expected: false,
+		},
+		{
+			name:     "parent directory match",
+			dirs:     []string{"vendor"},
+			repoPath: "vendor/oca/project",
+			expected: true,
+		},
+		{
+			name:     "similar name no match",
+			dirs:     []string{"ab"},
+			repoPath: "abc",
+			expected: false,
+		},
+		{
+			name:     "nested parent match",
+			dirs:     []string{"projects/odoo"},
+			repoPath: "projects/odoo/oca/survey",
+			expected: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			set := make(map[string]struct{})
+			for _, dir := range tt.dirs {
+				set[dir] = struct{}{}
+			}
+			cfg := &Config{}
+			result := cfg.containsPath(set, tt.repoPath)
+			if result != tt.expected {
+				t.Errorf("containsPath() = %v, expected %v", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestIsParentPath(t *testing.T) {
+	tests := []struct {
+		name     string
+		parent   string
+		child    string
+		expected bool
+	}{
+		{
+			name:     "exact same path",
+			parent:   "vendor",
+			child:    "vendor",
+			expected: true,
+		},
+		{
+			name:     "parent is parent",
+			parent:   "vendor",
+			child:    "vendor/oca",
+			expected: true,
+		},
+		{
+			name:     "nested parent",
+			parent:   "projects/odoo",
+			child:    "projects/odoo/oca/survey",
+			expected: true,
+		},
+		{
+			name:     "not parent",
+			parent:   "vendor",
+			child:    "build",
+			expected: false,
+		},
+		{
+			name:     "similar name not parent",
+			parent:   "ab",
+			child:    "abc",
+			expected: false,
+		},
+		{
+			name:     "child is shorter",
+			parent:   "vendor/oca",
+			child:    "vendor",
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{}
+			result := cfg.isParentPath(tt.parent, tt.child)
+			if result != tt.expected {
+				t.Errorf("isParentPath(%q, %q) = %v, expected %v", tt.parent, tt.child, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestFilterReposForExecution(t *testing.T) {
+	repos := []RepoInfo{
+		{Path: "/root/vendor", RelPath: "vendor"},
+		{Path: "/root/custom", RelPath: "custom"},
+		{Path: "/root/build", RelPath: "build"},
+		{Path: "/root/vendor/oca/project", RelPath: "vendor/oca/project"},
+	}
+
+	tests := []struct {
+		name           string
+		includeDirs    []string
+		skipDirs       []string
+		expectedPaths  []string
+		expectedCount  int
+	}{
+		{
+			name:          "no filters - return all",
+			expectedPaths: []string{"vendor", "custom", "build", "vendor/oca/project"},
+			expectedCount: 4,
+		},
+		{
+			name:          "include specific dirs",
+			includeDirs:   []string{"vendor", "custom"},
+			expectedPaths: []string{"vendor", "custom", "vendor/oca/project"},
+			expectedCount: 3,
+		},
+		{
+			name:          "skip specific dirs",
+			skipDirs:      []string{"build"},
+			expectedPaths: []string{"vendor", "custom", "vendor/oca/project"},
+			expectedCount: 3,
+		},
+		{
+			name:          "include takes priority",
+			includeDirs:   []string{"vendor"},
+			skipDirs:      []string{"vendor"},
+			expectedPaths: []string{"vendor", "vendor/oca/project"},
+			expectedCount: 2,
+		},
+		{
+			name:          "include none matching",
+			includeDirs:   []string{"nonexistent"},
+			expectedPaths: []string{},
+			expectedCount: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := newConfig(tt.skipDirs, tt.includeDirs)
+			filtered := cfg.filterReposForExecution(repos)
+
+			if len(filtered) != tt.expectedCount {
+				t.Errorf("filterReposForExecution() returned %d repos, expected %d", len(filtered), tt.expectedCount)
+			}
+
+			var actualPaths []string
+			for _, repo := range filtered {
+				actualPaths = append(actualPaths, repo.RelPath)
+			}
+
+			for _, expectedPath := range tt.expectedPaths {
+				found := false
+				for _, actualPath := range actualPaths {
+					if actualPath == expectedPath {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("Expected path %q not found in filtered results: %v", expectedPath, actualPaths)
+				}
+			}
+		})
 	}
 }

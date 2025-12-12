@@ -49,12 +49,21 @@ func (cfg *Config) shouldSkipDir(name string) bool {
 		return false
 	}
 
-	if _, skip := cfg.skipSet[name]; skip {
+	if strings.HasPrefix(name, ".") && name != ".git" {
 		return true
 	}
 
-	if strings.HasPrefix(name, ".") && name != ".git" {
-		return true
+	performanceSkipDirs := []string{
+		"node_modules", "vendor", "__pycache__", ".pytest_cache",
+		"build", "dist", "out", "target", "bin", "obj",
+		".next", "coverage", ".nyc_output", ".tox",
+		".venv", "venv", ".env", "env",
+	}
+
+	for _, skipDir := range performanceSkipDirs {
+		if name == skipDir {
+			return true
+		}
 	}
 
 	return false

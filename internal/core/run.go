@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -54,6 +55,63 @@ func newConfig(skipDirs, includeDirs []string) *Config {
 	return cfg
 }
 
+func (cfg *Config) shouldExecuteInRepo(relPath string) bool {
+	if len(cfg.includeSet) > 0 {
+		return cfg.containsPath(cfg.includeSet, relPath)
+	}
+
+	if len(cfg.skipSet) > 0 {
+		return !cfg.containsPath(cfg.skipSet, relPath)
+	}
+
+	return true
+}
+
+func (cfg *Config) containsPath(set map[string]struct{}, relPath string) bool {
+	cleanPath := filepath.Clean(relPath)
+
+	if _, exists := set[cleanPath]; exists {
+		return true
+	}
+
+	for dir := range set {
+		if cfg.isParentPath(dir, cleanPath) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (cfg *Config) isParentPath(parent, child string) bool {
+	parent = filepath.Clean(parent)
+	child = filepath.Clean(child)
+
+	if parent == child {
+		return true
+	}
+
+	parentWithSep := parent + string(filepath.Separator)
+	childWithSep := child + string(filepath.Separator)
+
+	return strings.HasPrefix(childWithSep, parentWithSep)
+}
+
+func (cfg *Config) filterReposForExecution(repos []RepoInfo) []RepoInfo {
+	if len(cfg.includeSet) == 0 && len(cfg.skipSet) == 0 {
+		return repos
+	}
+
+	var filtered []RepoInfo
+	for _, repo := range repos {
+		if cfg.shouldExecuteInRepo(repo.RelPath) {
+			filtered = append(filtered, repo)
+		}
+	}
+
+	return filtered
+}
+
 // Run is the main entry point for the gb CLI tool.
 func Run(args []string) error {
 	fs := flag.NewFlagSet("gb", flag.ContinueOnError)
@@ -70,11 +128,11 @@ func Run(args []string) error {
 	workers := fs.Int("workers", defaultWorkers, "Number of concurrent workers")
 	fs.IntVar(workers, "w", defaultWorkers, "Number of concurrent workers (shorthand)")
 
-	skipDirsFlag := fs.String("skipDirs", "", "Comma-separated list of directories to skip (overrides defaults)")
-	fs.StringVar(skipDirsFlag, "s", "", "Directories to skip (shorthand)")
+	skipDirsFlag := fs.String("skipDirs", "", "Comma-separated list of directories to exclude from command execution")
+	fs.StringVar(skipDirsFlag, "s", "", "Directories to exclude from execution (shorthand)")
 
-	includeDirsFlag := fs.String("includeDirs", "", "Comma-separated list of directories to include (removes them from skipDirs)")
-	fs.StringVar(includeDirsFlag, "i", "", "Directories to include (shorthand)")
+	includeDirsFlag := fs.String("includeDirs", "", "Comma-separated list of directories to include in command execution (only execute in these directories)")
+	fs.StringVar(includeDirsFlag, "i", "", "Directories to include in execution (shorthand)")
 
 	showVersion := fs.Bool("version", false, "Show version information")
 	fs.BoolVar(showVersion, "v", false, "Show version (shorthand)")
@@ -88,19 +146,22 @@ func Run(args []string) error {
 		fmt.Println("  -c, --cmd string        Execute a git command in all repositories")
 		fmt.Println("  -sh, --shell string     Execute a shell command in all repositories")
 		fmt.Println("  -w, --workers int       Number of concurrent workers (default 20)")
-		fmt.Println("  -s, --skipDirs string   Comma-separated list of directories to skip")
+		fmt.Println("  -s, --skipDirs string   Comma-separated list of directories to exclude from execution")
 		fmt.Println("  -i, --includeDirs string")
-		fmt.Println("                          Comma-separated list of directories to include")
+		fmt.Println("                          Comma-separated list of directories to include in execution")
 		fmt.Println("\nExamples:")
 		fmt.Println("  gb main                      Switch all repos to main branch")
 		fmt.Println("  gb -l                        List all current branches")
 		fmt.Println("  gb --list                    List all current branches")
 		fmt.Println("  gb -w 50 -l                  Fast branch listing with 50 workers")
 		fmt.Println("  gb --workers 5 main          Switch with 5 concurrent workers")
-		fmt.Println("  gb -i \"vendor,dist\" 15.0     Include normally skipped directories")
+		fmt.Println("  gb -i \"vendor,custom\" 15.0   Execute only in vendor and custom directories")
+		fmt.Println("  gb -s \"build,temp\" -l        List branches, excluding build and temp directories")
 		fmt.Println("  gb -c \"status\"               Execute 'git status' in all repositories")
+		fmt.Println("  gb -c \"status\" -i \"abc,def\"  Execute 'git status' only in abc and def directories")
 		fmt.Println("  gb --cmd \"fetch origin\"     Execute 'git fetch origin' in all repositories")
 		fmt.Println("  gb -sh \"ls -la\"              Execute 'ls -la' shell command in all repositories")
+		fmt.Println("  gb -sh \"pwd\" -i \"vendor\"     Execute 'pwd' only in vendor directory")
 		fmt.Println("  gb --shell \"mkdir tmp\"      Execute 'mkdir tmp' shell command in all repositories")
 	}
 

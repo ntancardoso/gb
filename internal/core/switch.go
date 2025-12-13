@@ -209,17 +209,23 @@ func min(a, b int) int {
 }
 
 func switchBranches(root, target string, workers int, cfg *Config) {
-	repos, err := findGitRepos(root, cfg)
+	allRepos, err := findGitRepos(root, cfg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(1)
 	}
-	if len(repos) == 0 {
+	if len(allRepos) == 0 {
 		fmt.Println("No repos found")
 		return
 	}
 
-	fmt.Printf("Found %d repos, switching to %s with %d workers...\n", len(repos), target, workers)
+	repos := cfg.filterReposForExecution(allRepos)
+	if len(repos) == 0 {
+		fmt.Println("No repos match the specified include/exclude criteria")
+		return
+	}
+
+	fmt.Printf("Found %d repos (filtered from %d discovered), switching to %s with %d workers...\n", len(repos), len(allRepos), target, workers)
 
 	progress := NewProgressState(repos)
 	progress.render()

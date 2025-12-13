@@ -58,15 +58,23 @@ func getBranch(path string) (string, error) {
 
 func listAllBranches(root string, workers int, cfg *Config) {
 	fmt.Printf("Discovering repos in %s...\n", root)
-	repos, err := findGitRepos(root, cfg)
+	allRepos, err := findGitRepos(root, cfg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(1)
 	}
-	if len(repos) == 0 {
+	if len(allRepos) == 0 {
 		fmt.Println("No repos found")
 		return
 	}
+
+	repos := cfg.filterReposForExecution(allRepos)
+	if len(repos) == 0 {
+		fmt.Println("No repos match the specified include/exclude criteria")
+		return
+	}
+
+	fmt.Printf("Listing branches in %d repos (filtered from %d discovered)...\n", len(repos), len(allRepos))
 
 	repoCh := make(chan RepoInfo, len(repos))
 	resCh := make(chan BranchResult, len(repos))
@@ -121,13 +129,19 @@ func listAllBranches(root string, workers int, cfg *Config) {
 
 func executeCommandInRepos(root, command string, workers int, cfg *Config) {
 	fmt.Printf("Discovering repos in %s...\n", root)
-	repos, err := findGitRepos(root, cfg)
+	allRepos, err := findGitRepos(root, cfg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(1)
 	}
-	if len(repos) == 0 {
+	if len(allRepos) == 0 {
 		fmt.Println("No repos found")
+		return
+	}
+
+	repos := cfg.filterReposForExecution(allRepos)
+	if len(repos) == 0 {
+		fmt.Println("No repos match the specified include/exclude criteria")
 		return
 	}
 
@@ -137,7 +151,7 @@ func executeCommandInRepos(root, command string, workers int, cfg *Config) {
 		os.Exit(1)
 	}
 
-	fmt.Printf("Executing 'git %s' in %d repos with %d workers...\n", command, len(repos), workers)
+	fmt.Printf("Executing 'git %s' in %d repos (filtered from %d discovered) with %d workers...\n", command, len(repos), len(allRepos), workers)
 
 	repoCh := make(chan RepoInfo, len(repos))
 	resCh := make(chan CommandResult, len(repos))
@@ -195,13 +209,19 @@ func executeCommandInRepos(root, command string, workers int, cfg *Config) {
 
 func executeShellInRepos(root, command string, workers int, cfg *Config) {
 	fmt.Printf("Discovering repos in %s...\n", root)
-	repos, err := findGitRepos(root, cfg)
+	allRepos, err := findGitRepos(root, cfg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(1)
 	}
-	if len(repos) == 0 {
+	if len(allRepos) == 0 {
 		fmt.Println("No repos found")
+		return
+	}
+
+	repos := cfg.filterReposForExecution(allRepos)
+	if len(repos) == 0 {
+		fmt.Println("No repos match the specified include/exclude criteria")
 		return
 	}
 
@@ -210,7 +230,7 @@ func executeShellInRepos(root, command string, workers int, cfg *Config) {
 		os.Exit(1)
 	}
 
-	fmt.Printf("Executing '%s' in %d repos with %d workers...\n", command, len(repos), workers)
+	fmt.Printf("Executing '%s' in %d repos (filtered from %d discovered) with %d workers...\n", command, len(repos), len(allRepos), workers)
 
 	repoCh := make(chan RepoInfo, len(repos))
 	resCh := make(chan CommandResult, len(repos))

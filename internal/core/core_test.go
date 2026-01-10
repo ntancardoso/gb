@@ -119,7 +119,7 @@ func TestListAllBranches(t *testing.T) {
 	cfg := newConfig(defaultSkipDirs, nil)
 	listAllBranches(tmpDir, 2, cfg)
 
-	w.Close()
+	_ = w.Close()
 	os.Stdout = oldStdout
 
 	buf := make([]byte, 1024)
@@ -208,7 +208,7 @@ func TestExecuteCommandInRepos(t *testing.T) {
 	cfg := newConfig(defaultSkipDirs, nil)
 	executeCommandInRepos(tmpDir, "status", 2, cfg)
 
-	w.Close()
+	_ = w.Close()
 	os.Stdout = oldStdout
 
 	buf := make([]byte, 2048)
@@ -287,7 +287,7 @@ func TestExecuteShellInRepos(t *testing.T) {
 	cfg := newConfig(defaultSkipDirs, nil)
 	executeShellInRepos(tmpDir, "echo test", 2, cfg)
 
-	w.Close()
+	_ = w.Close()
 	os.Stdout = oldStdout
 
 	buf := make([]byte, 2048)
@@ -326,30 +326,24 @@ func TestRun(t *testing.T) {
 	// Test with branch name
 	tmpDir := t.TempDir()
 	oldDir, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(oldDir)
+	_ = os.Chdir(tmpDir)
+	defer func() { _ = os.Chdir(oldDir) }()
 
 	createGitRepo(t, filepath.Join(tmpDir, "repo1"))
 
-	err = Run([]string{"main"})
-	if err != nil {
-		// This might fail due to branch not existing, which is expected
-		// The important part is that it runs without panicking
-	}
+	_ = Run([]string{"main"})
+	// This might fail due to branch not existing, which is expected
+	// The important part is that it runs without panicking
 
 	// Test command execution flag
-	err = Run([]string{"-c", "status"})
-	if err != nil {
-		// This might fail if no repos are found, which is expected
-		// The important part is that it runs without panicking
-	}
+	_ = Run([]string{"-c", "status"})
+	// This might fail if no repos are found, which is expected
+	// The important part is that it runs without panicking
 
 	// Test shell execution flag
-	err = Run([]string{"-sh", "echo test"})
-	if err != nil {
-		// This might fail if no repos are found, which is expected
-		// The important part is that it runs without panicking
-	}
+	_ = Run([]string{"-sh", "echo test"})
+	// This might fail if no repos are found, which is expected
+	// The important part is that it runs without panicking
 }
 
 func TestConfigSkipSet(t *testing.T) {

@@ -317,7 +317,6 @@ func processSingleRepo(repo RepoInfo, targetBranch string) SwitchResult {
 					Error:   "fetch failed: " + string(out),
 				}
 			}
-			branchExists = true
 		} else {
 			return SwitchResult{RelPath: repo.RelPath, Success: false, Error: "branch not found"}
 		}

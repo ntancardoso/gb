@@ -153,11 +153,11 @@ func (s *repoScanner) isGitRepo(path string) bool {
 
 func (s *repoScanner) printProgress() {
 	if time.Since(s.lastUpdate) > progressUpdateInterval {
-		fmt.Fprintf(s.output, "Scanned %d dirs (skipped %d)...\r", s.processed, s.skipped)
+		_, _ = fmt.Fprintf(s.output, "Scanned %d dirs (skipped %d)...\r", s.processed, s.skipped)
 		s.lastUpdate = time.Now()
 	}
 }
 
 func (s *repoScanner) printFinal() {
-	fmt.Fprintf(s.output, "Scanned %d dirs (skipped %d).\n", s.processed, s.skipped)
+	_, _ = fmt.Fprintf(s.output, "Scanned %d dirs (skipped %d).\n", s.processed, s.skipped)
 }

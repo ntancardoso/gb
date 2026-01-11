@@ -110,37 +110,37 @@ func (ps *ProgressState) render() {
 
 func (ps *ProgressState) renderANSI() {
 	if ps.linesDrawn > 0 {
-		fmt.Fprintf(ps.writer, "\033[%dA", ps.linesDrawn)
+		_, _ = fmt.Fprintf(ps.writer, "\033[%dA", ps.linesDrawn)
 	}
 
 	lines := 0
 	waiting, processing, completed, failed := ps.countStatuses()
 
-	fmt.Fprintf(ps.writer, "Progress: Switching branches...\n")
+	_, _ = fmt.Fprintf(ps.writer, "Progress: Switching branches...\n")
 	lines++
 
 	displayCount := min(maxDisplayedRepos, len(ps.repos))
 	for i := 0; i < displayCount; i++ {
 		icon := ps.getStatusIcon(ps.statuses[i].state)
 		statusText := ps.formatStatus(ps.statuses[i])
-		fmt.Fprintf(ps.writer, "[%d] %s %s - %s\033[K\n", i+1, icon, ps.repos[i].RelPath, statusText)
+		_, _ = fmt.Fprintf(ps.writer, "[%d] %s %s - %s\033[K\n", i+1, icon, ps.repos[i].RelPath, statusText)
 		lines++
 	}
 
 	if len(ps.repos) > maxDisplayedRepos {
-		fmt.Fprintf(ps.writer, "... and %d more repos\n", len(ps.repos)-maxDisplayedRepos)
+		_, _ = fmt.Fprintf(ps.writer, "... and %d more repos\n", len(ps.repos)-maxDisplayedRepos)
 		lines++
 	}
 
-	fmt.Fprintf(ps.writer, "Status: %d waiting, %d processing, %d done, %d failed (%d/%d)\n",
+	_, _ = fmt.Fprintf(ps.writer, "Status: %d waiting, %d processing, %d done, %d failed (%d/%d)\n",
 		waiting, processing, completed, failed, completed+failed, ps.totalRepos)
 	lines++
 
 	if lines < ps.linesDrawn {
 		for i := lines; i < ps.linesDrawn; i++ {
-			fmt.Fprintf(ps.writer, "\033[K\n")
+			_, _ = fmt.Fprintf(ps.writer, "\033[K\n")
 		}
-		fmt.Fprintf(ps.writer, "\033[%dA", ps.linesDrawn-lines)
+		_, _ = fmt.Fprintf(ps.writer, "\033[%dA", ps.linesDrawn-lines)
 	}
 
 	ps.linesDrawn = lines
@@ -148,7 +148,7 @@ func (ps *ProgressState) renderANSI() {
 
 func (ps *ProgressState) renderSimple() {
 	waiting, processing, completed, failed := ps.countStatuses()
-	fmt.Fprintf(ps.writer, "Progress: %d waiting, %d processing, %d done, %d failed (%d/%d)\n",
+	_, _ = fmt.Fprintf(ps.writer, "Progress: %d waiting, %d processing, %d done, %d failed (%d/%d)\n",
 		waiting, processing, completed, failed, completed+failed, ps.totalRepos)
 }
 
@@ -317,7 +317,6 @@ func processSingleRepo(repo RepoInfo, targetBranch string) SwitchResult {
 					Error:   "fetch failed: " + string(out),
 				}
 			}
-			branchExists = true
 		} else {
 			return SwitchResult{RelPath: repo.RelPath, Success: false, Error: "branch not found"}
 		}

@@ -138,7 +138,7 @@ func Run(args []string) error {
 	fs.BoolVar(showVersion, "v", false, "Show version (shorthand)")
 
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "Usage: gb [options] <branch_name>\n\n")
+		_, _ = fmt.Fprintf(fs.Output(), "Usage: gb [options] <branch_name>\n\n")
 		fmt.Println("Options:")
 		fmt.Println("  -h, --help              Show this help message")
 		fmt.Println("  -v, --version           Show version information")

@@ -416,7 +416,7 @@ func createGitRepo(t *testing.T, path string) {
 		t.Fatal(err)
 	}
 
-	runCmd(t, path, "git", "init")
+	runCmd(t, path, "git", "init", "-b", "main")
 	runCmd(t, path, "git", "config", "user.name", "test")
 	runCmd(t, path, "git", "config", "user.email", "test@test.com")
 

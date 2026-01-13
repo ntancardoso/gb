@@ -33,7 +33,7 @@ type CommandResult struct {
 	Retries int
 }
 
-func executeGitCommandWithRetry(ctx context.Context, dir string, args ...string) ([]byte, error, int) {
+func executeGitCommandWithRetry(ctx context.Context, dir string, args ...string) ([]byte, int, error) {
 	var lastErr error
 	var output []byte
 
@@ -46,7 +46,7 @@ func executeGitCommandWithRetry(ctx context.Context, dir string, args ...string)
 		cancel()
 
 		if lastErr == nil {
-			return output, nil, attempt
+			return output, attempt, nil
 		}
 
 		if cmdCtx.Err() != nil {
@@ -55,11 +55,11 @@ func executeGitCommandWithRetry(ctx context.Context, dir string, args ...string)
 				continue
 			}
 		} else {
-			return output, lastErr, attempt
+			return output, attempt, lastErr
 		}
 	}
 
-	return output, lastErr, maxRetries - 1
+	return output, maxRetries - 1, lastErr
 }
 
 func getBranch(path string) (string, error) {
@@ -197,7 +197,7 @@ func executeCommandInRepos(root, command string, workers int, cfg *Config) {
 		go func() {
 			defer wg.Done()
 			for r := range repoCh {
-				output, err, retries := executeGitCommandWithRetry(context.Background(), r.Path, args...)
+				output, retries, err := executeGitCommandWithRetry(context.Background(), r.Path, args...)
 
 				resCh <- CommandResult{
 					RelPath: r.RelPath,

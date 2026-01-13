@@ -22,3 +22,6 @@ go.work
 .env
 .claude/
 bin
+
+# Claude Code CLI temporary files
+tmpclaude-*-cwd

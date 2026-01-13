@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -8,11 +9,15 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
 	branchStateNoCommits = "no commits"
 	branchStateDetached  = "detached"
+	gitCommandTimeout    = 5 * time.Minute
+	maxRetries           = 3
+	retryDelay           = 2 * time.Second
 )
 
 type BranchResult struct {
@@ -25,6 +30,36 @@ type CommandResult struct {
 	RelPath string
 	Output  string
 	Error   error
+	Retries int
+}
+
+func executeGitCommandWithRetry(ctx context.Context, dir string, args ...string) ([]byte, error, int) {
+	var lastErr error
+	var output []byte
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		cmdCtx, cancel := context.WithTimeout(ctx, gitCommandTimeout)
+		cmd := exec.CommandContext(cmdCtx, "git", args...)
+		cmd.Dir = dir
+
+		output, lastErr = cmd.CombinedOutput()
+		cancel()
+
+		if lastErr == nil {
+			return output, nil, attempt
+		}
+
+		if cmdCtx.Err() != nil {
+			if attempt < maxRetries-1 {
+				time.Sleep(retryDelay)
+				continue
+			}
+		} else {
+			return output, lastErr, attempt
+		}
+	}
+
+	return output, lastErr, maxRetries - 1
 }
 
 func getBranch(path string) (string, error) {
@@ -162,14 +197,13 @@ func executeCommandInRepos(root, command string, workers int, cfg *Config) {
 		go func() {
 			defer wg.Done()
 			for r := range repoCh {
-				cmd := exec.Command("git", args...)
-				cmd.Dir = r.Path
-				output, err := cmd.CombinedOutput()
+				output, err, retries := executeGitCommandWithRetry(context.Background(), r.Path, args...)
 
 				resCh <- CommandResult{
 					RelPath: r.RelPath,
 					Output:  string(output),
 					Error:   err,
+					Retries: retries,
 				}
 			}
 		}()
@@ -187,14 +221,19 @@ func executeCommandInRepos(root, command string, workers int, cfg *Config) {
 
 	success, failed := 0, 0
 	for res := range resCh {
+		retryInfo := ""
+		if res.Retries > 0 {
+			retryInfo = fmt.Sprintf(" (retried %d time(s))", res.Retries)
+		}
+
 		if res.Error != nil {
-			fmt.Printf("❌ %s:\n%s\n%s\n", res.RelPath, res.Output, res.Error)
+			fmt.Printf("❌ %s%s:\n%s\n%s\n", res.RelPath, retryInfo, res.Output, res.Error)
 			failed++
 		} else {
 			if strings.TrimSpace(res.Output) != "" {
-				fmt.Printf("✅ %s:\n%s\n", res.RelPath, res.Output)
+				fmt.Printf("✅ %s%s:\n%s\n", res.RelPath, retryInfo, res.Output)
 			} else {
-				fmt.Printf("✅ %s: OK\n", res.RelPath)
+				fmt.Printf("✅ %s%s: OK\n", res.RelPath, retryInfo)
 			}
 			success++
 		}
@@ -241,14 +280,16 @@ func executeShellInRepos(root, command string, workers int, cfg *Config) {
 		go func() {
 			defer wg.Done()
 			for r := range repoCh {
+				ctx, cancel := context.WithTimeout(context.Background(), gitCommandTimeout)
 				var cmd *exec.Cmd
 				if runtime.GOOS == "windows" {
-					cmd = exec.Command("cmd", "/c", command)
+					cmd = exec.CommandContext(ctx, "cmd", "/c", command)
 				} else {
-					cmd = exec.Command("sh", "-c", command)
+					cmd = exec.CommandContext(ctx, "sh", "-c", command)
 				}
 				cmd.Dir = r.Path
 				output, err := cmd.CombinedOutput()
+				cancel()
 
 				resCh <- CommandResult{
 					RelPath: r.RelPath,

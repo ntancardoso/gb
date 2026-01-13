@@ -8,6 +8,12 @@ on:
       - 'test/**'
   pull_request:
     branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to run CI on'
+        required: false
+        default: 'main'
 
 jobs:
   test:

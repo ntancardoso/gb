@@ -626,11 +626,11 @@ func TestFilterReposForExecution(t *testing.T) {
 	}
 
 	tests := []struct {
-		name           string
-		includeDirs    []string
-		skipDirs       []string
-		expectedPaths  []string
-		expectedCount  int
+		name          string
+		includeDirs   []string
+		skipDirs      []string
+		expectedPaths []string
+		expectedCount int
 	}{
 		{
 			name:          "no filters - return all",

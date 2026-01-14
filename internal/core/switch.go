@@ -34,9 +34,9 @@ type ProgressState struct {
 	statuses     []repoStatus
 	mu           sync.Mutex
 	totalRepos   int
-	linesDrawn   int
 	writer       io.Writer
 	supportsANSI bool
+	linesDrawn   int
 }
 
 func NewProgressState(repos []RepoInfo) *ProgressState {
@@ -110,36 +110,36 @@ func (ps *ProgressState) render() {
 
 func (ps *ProgressState) renderANSI() {
 	if ps.linesDrawn > 0 {
-		_, _ = fmt.Fprintf(ps.writer, "\033[%dA", ps.linesDrawn)
+		_, _ = fmt.Fprintf(ps.writer, "\033[%dA\r", ps.linesDrawn)
 	}
 
 	lines := 0
 	waiting, processing, completed, failed := ps.countStatuses()
 
-	_, _ = fmt.Fprintf(ps.writer, "Progress: Switching branches...\n")
+	_, _ = fmt.Fprintf(ps.writer, "\033[KProgress: Switching branches...\n")
 	lines++
 
 	displayCount := min(maxDisplayedRepos, len(ps.repos))
 	for i := 0; i < displayCount; i++ {
 		icon := ps.getStatusIcon(ps.statuses[i].state)
 		statusText := ps.formatStatus(ps.statuses[i])
-		_, _ = fmt.Fprintf(ps.writer, "[%d] %s %s - %s\033[K\n", i+1, icon, ps.repos[i].RelPath, statusText)
+		_, _ = fmt.Fprintf(ps.writer, "\033[K[%d] %s %s - %s\n", i+1, icon, ps.repos[i].RelPath, statusText)
 		lines++
 	}
 
 	if len(ps.repos) > maxDisplayedRepos {
-		_, _ = fmt.Fprintf(ps.writer, "... and %d more repos\n", len(ps.repos)-maxDisplayedRepos)
+		_, _ = fmt.Fprintf(ps.writer, "\033[K... and %d more repos\n", len(ps.repos)-maxDisplayedRepos)
 		lines++
 	}
 
-	_, _ = fmt.Fprintf(ps.writer, "Status: %d waiting, %d processing, %d done, %d failed (%d/%d)\n",
+	_, _ = fmt.Fprintf(ps.writer, "\033[KStatus: %d waiting, %d processing, %d done, %d failed (%d/%d)\n",
 		waiting, processing, completed, failed, completed+failed, ps.totalRepos)
 	lines++
 
+	for i := lines; i < ps.linesDrawn; i++ {
+		_, _ = fmt.Fprintf(ps.writer, "\033[K\n")
+	}
 	if lines < ps.linesDrawn {
-		for i := lines; i < ps.linesDrawn; i++ {
-			_, _ = fmt.Fprintf(ps.writer, "\033[K\n")
-		}
 		_, _ = fmt.Fprintf(ps.writer, "\033[%dA", ps.linesDrawn-lines)
 	}
 

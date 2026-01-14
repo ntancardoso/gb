@@ -62,6 +62,63 @@ func executeGitCommandWithRetry(ctx context.Context, dir string, args ...string)
 	return output, maxRetries - 1, lastErr
 }
 
+func executeGitCommandWithRetryToFile(ctx context.Context, dir string, logFile *os.File, args ...string) (int, error) {
+	var lastErr error
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		cmdCtx, cancel := context.WithTimeout(ctx, gitCommandTimeout)
+		cmd := exec.CommandContext(cmdCtx, "git", args...)
+		cmd.Dir = dir
+
+		cmd.Stdout = logFile
+		cmd.Stderr = logFile
+
+		lastErr = cmd.Run()
+		cancel()
+
+		if lastErr == nil {
+			return attempt, nil
+		}
+
+		if cmdCtx.Err() != nil {
+			if attempt < maxRetries-1 {
+				fmt.Fprintf(logFile, "\n--- Retry %d/%d after timeout ---\n", attempt+1, maxRetries)
+				time.Sleep(retryDelay)
+				continue
+			}
+		} else {
+			fmt.Fprintf(logFile, "\n--- Command failed: %s ---\n", lastErr)
+			return attempt, lastErr
+		}
+	}
+
+	return maxRetries - 1, lastErr
+}
+
+func executeShellCommandToFile(ctx context.Context, dir string, logFile *os.File, command string) error {
+	cmdCtx, cancel := context.WithTimeout(ctx, gitCommandTimeout)
+	defer cancel()
+
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.CommandContext(cmdCtx, "cmd", "/c", command)
+	} else {
+		cmd = exec.CommandContext(cmdCtx, "sh", "-c", command)
+	}
+	cmd.Dir = dir
+
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+
+	err := cmd.Run()
+
+	if err != nil {
+		fmt.Fprintf(logFile, "\n--- Command failed: %s ---\n", err)
+	}
+
+	return err
+}
+
 func getBranch(path string) (string, error) {
 	cmd := exec.Command("git", "branch", "--show-current")
 	cmd.Dir = path
@@ -186,7 +243,19 @@ func executeCommandInRepos(root, command string, workers int, cfg *Config) {
 		os.Exit(1)
 	}
 
-	fmt.Printf("Executing 'git %s' in %d repos (filtered from %d discovered) with %d workers...\n", command, len(repos), len(allRepos), workers)
+	fmt.Printf("Found %d repos (filtered from %d discovered), executing 'git %s' with %d workers...\n",
+		len(repos), len(allRepos), command, workers)
+
+
+	logManager, err := NewLogManager()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating log manager: %s\n", err)
+		os.Exit(1)
+	}
+
+
+	progress := NewProgressState(repos, fmt.Sprintf("Executing 'git %s'", command))
+	progress.render()
 
 	repoCh := make(chan RepoInfo, len(repos))
 	resCh := make(chan CommandResult, len(repos))
@@ -197,13 +266,60 @@ func executeCommandInRepos(root, command string, workers int, cfg *Config) {
 		go func() {
 			defer wg.Done()
 			for r := range repoCh {
-				output, retries, err := executeGitCommandWithRetry(context.Background(), r.Path, args...)
 
-				resCh <- CommandResult{
-					RelPath: r.RelPath,
-					Output:  string(output),
-					Error:   err,
-					Retries: retries,
+				progress.UpdateStatus(r.RelPath, statusProcessing, "")
+
+
+				logFile, err := logManager.CreateLogFile(r.RelPath)
+				var retries int
+				var cmdErr error
+
+				if err != nil {
+
+					output, retries, cmdErr := executeGitCommandWithRetry(context.Background(), r.Path, args...)
+					result := CommandResult{
+						RelPath: r.RelPath,
+						Output:  string(output),
+						Error:   cmdErr,
+						Retries: retries,
+					}
+
+
+					if cmdErr != nil {
+						errorMsg := cmdErr.Error()
+						if len(errorMsg) > 50 {
+							errorMsg = errorMsg[:50] + "..."
+						}
+						progress.UpdateStatus(r.RelPath, statusFailed, errorMsg)
+					} else {
+						progress.UpdateStatus(r.RelPath, statusCompleted, "")
+					}
+
+					resCh <- result
+				} else {
+
+					retries, cmdErr = executeGitCommandWithRetryToFile(context.Background(), r.Path, logFile, args...)
+					logFile.Close()
+
+					result := CommandResult{
+						RelPath: r.RelPath,
+						Output:  "",
+						Error:   cmdErr,
+						Retries: retries,
+					}
+
+
+					if cmdErr != nil {
+						errorMsg := cmdErr.Error()
+						if len(errorMsg) > 50 {
+							errorMsg = errorMsg[:50] + "..."
+						}
+						progress.UpdateStatus(r.RelPath, statusFailed, errorMsg)
+					} else {
+						progress.UpdateStatus(r.RelPath, statusCompleted, "")
+					}
+
+					resCh <- result
 				}
 			}
 		}()
@@ -219,28 +335,31 @@ func executeCommandInRepos(root, command string, workers int, cfg *Config) {
 		close(resCh)
 	}()
 
+
+	var results []CommandResult
 	success, failed := 0, 0
 	for res := range resCh {
-		retryInfo := ""
-		if res.Retries > 0 {
-			retryInfo = fmt.Sprintf(" (retried %d time(s))", res.Retries)
-		}
-
+		results = append(results, res)
 		if res.Error != nil {
-			fmt.Printf("❌ %s%s:\n%s\n%s\n", res.RelPath, retryInfo, res.Output, res.Error)
 			failed++
 		} else {
-			if strings.TrimSpace(res.Output) != "" {
-				fmt.Printf("✅ %s%s:\n%s\n", res.RelPath, retryInfo, res.Output)
-			} else {
-				fmt.Printf("✅ %s%s: OK\n", res.RelPath, retryInfo)
-			}
 			success++
 		}
 	}
 
-	fmt.Printf("\n--- Summary ---\n")
-	fmt.Printf("Executed 'git %s' in %d repos: %d succeeded, %d failed\n", command, success+failed, success, failed)
+
+	fmt.Printf("\n\n--- Summary ---\n")
+	fmt.Printf("Executed 'git %s' in %d repos: %d succeeded, %d failed\n",
+		command, success+failed, success, failed)
+
+
+	if PromptViewLogs() {
+		DisplayLogs(logManager, results)
+	} else {
+		fmt.Printf("\nLogs are available at: %s\n", logManager.GetTempDir())
+		fmt.Println("You can review them later if needed.")
+	}
+
 	if failed > 0 {
 		os.Exit(1)
 	}
@@ -269,7 +388,19 @@ func executeShellInRepos(root, command string, workers int, cfg *Config) {
 		os.Exit(1)
 	}
 
-	fmt.Printf("Executing '%s' in %d repos (filtered from %d discovered) with %d workers...\n", command, len(repos), len(allRepos), workers)
+	fmt.Printf("Found %d repos (filtered from %d discovered), executing '%s' with %d workers...\n",
+		len(repos), len(allRepos), command, workers)
+
+
+	logManager, err := NewLogManager()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating log manager: %s\n", err)
+		os.Exit(1)
+	}
+
+
+	progress := NewProgressState(repos, fmt.Sprintf("Executing '%s'", command))
+	progress.render()
 
 	repoCh := make(chan RepoInfo, len(repos))
 	resCh := make(chan CommandResult, len(repos))
@@ -280,21 +411,67 @@ func executeShellInRepos(root, command string, workers int, cfg *Config) {
 		go func() {
 			defer wg.Done()
 			for r := range repoCh {
-				ctx, cancel := context.WithTimeout(context.Background(), gitCommandTimeout)
-				var cmd *exec.Cmd
-				if runtime.GOOS == "windows" {
-					cmd = exec.CommandContext(ctx, "cmd", "/c", command)
-				} else {
-					cmd = exec.CommandContext(ctx, "sh", "-c", command)
-				}
-				cmd.Dir = r.Path
-				output, err := cmd.CombinedOutput()
-				cancel()
 
-				resCh <- CommandResult{
-					RelPath: r.RelPath,
-					Output:  string(output),
-					Error:   err,
+				progress.UpdateStatus(r.RelPath, statusProcessing, "")
+
+
+				logFile, err := logManager.CreateLogFile(r.RelPath)
+				var cmdErr error
+
+				if err != nil {
+
+					ctx, cancel := context.WithTimeout(context.Background(), gitCommandTimeout)
+					var cmd *exec.Cmd
+					if runtime.GOOS == "windows" {
+						cmd = exec.CommandContext(ctx, "cmd", "/c", command)
+					} else {
+						cmd = exec.CommandContext(ctx, "sh", "-c", command)
+					}
+					cmd.Dir = r.Path
+					output, cmdErr := cmd.CombinedOutput()
+					cancel()
+
+					result := CommandResult{
+						RelPath: r.RelPath,
+						Output:  string(output),
+						Error:   cmdErr,
+					}
+
+
+					if cmdErr != nil {
+						errorMsg := cmdErr.Error()
+						if len(errorMsg) > 50 {
+							errorMsg = errorMsg[:50] + "..."
+						}
+						progress.UpdateStatus(r.RelPath, statusFailed, errorMsg)
+					} else {
+						progress.UpdateStatus(r.RelPath, statusCompleted, "")
+					}
+
+					resCh <- result
+				} else {
+
+					cmdErr = executeShellCommandToFile(context.Background(), r.Path, logFile, command)
+					logFile.Close()
+
+					result := CommandResult{
+						RelPath: r.RelPath,
+						Output:  "",
+						Error:   cmdErr,
+					}
+
+
+					if cmdErr != nil {
+						errorMsg := cmdErr.Error()
+						if len(errorMsg) > 50 {
+							errorMsg = errorMsg[:50] + "..."
+						}
+						progress.UpdateStatus(r.RelPath, statusFailed, errorMsg)
+					} else {
+						progress.UpdateStatus(r.RelPath, statusCompleted, "")
+					}
+
+					resCh <- result
 				}
 			}
 		}()
@@ -310,23 +487,31 @@ func executeShellInRepos(root, command string, workers int, cfg *Config) {
 		close(resCh)
 	}()
 
+
+	var results []CommandResult
 	success, failed := 0, 0
 	for res := range resCh {
+		results = append(results, res)
 		if res.Error != nil {
-			fmt.Printf("❌ %s:\n%s\n%s\n", res.RelPath, res.Output, res.Error)
 			failed++
 		} else {
-			if strings.TrimSpace(res.Output) != "" {
-				fmt.Printf("✅ %s:\n%s\n", res.RelPath, res.Output)
-			} else {
-				fmt.Printf("✅ %s: OK\n", res.RelPath)
-			}
 			success++
 		}
 	}
 
-	fmt.Printf("\n--- Summary ---\n")
-	fmt.Printf("Executed '%s' in %d repos: %d succeeded, %d failed\n", command, success+failed, success, failed)
+
+	fmt.Printf("\n\n--- Summary ---\n")
+	fmt.Printf("Executed '%s' in %d repos: %d succeeded, %d failed\n",
+		command, success+failed, success, failed)
+
+
+	if PromptViewLogs() {
+		DisplayLogs(logManager, results)
+	} else {
+		fmt.Printf("\nLogs are available at: %s\n", logManager.GetTempDir())
+		fmt.Println("You can review them later if needed.")
+	}
+
 	if failed > 0 {
 		os.Exit(1)
 	}

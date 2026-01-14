@@ -211,18 +211,18 @@ func TestExecuteCommandInRepos(t *testing.T) {
 	_ = w.Close()
 	os.Stdout = oldStdout
 
-	buf := make([]byte, 2048)
+	buf := make([]byte, 4096)
 	n, _ := r.Read(buf)
 	output := string(buf[:n])
 
-	// Check that both repos are mentioned in the output
-	if !strings.Contains(output, "repo1") || !strings.Contains(output, "repo2") {
-		t.Errorf("expected both repos in output, got: %s", output)
+	// Check for summary line indicating success
+	if !strings.Contains(output, "2 succeeded, 0 failed") {
+		t.Errorf("expected success summary in output, got: %s", output)
 	}
 
-	// Check for success indicators
-	if !strings.Contains(output, "✅") {
-		t.Errorf("expected success indicators in output, got: %s", output)
+	// Check for log location message
+	if !strings.Contains(output, "Logs are available at:") {
+		t.Errorf("expected log location message in output, got: %s", output)
 	}
 }
 
@@ -290,23 +290,18 @@ func TestExecuteShellInRepos(t *testing.T) {
 	_ = w.Close()
 	os.Stdout = oldStdout
 
-	buf := make([]byte, 2048)
+	buf := make([]byte, 4096)
 	n, _ := r.Read(buf)
 	output := string(buf[:n])
 
-	// Check that both repos are mentioned in the output
-	if !strings.Contains(output, "repo1") || !strings.Contains(output, "repo2") {
-		t.Errorf("expected both repos in output, got: %s", output)
+	// Check for summary line indicating success
+	if !strings.Contains(output, "2 succeeded, 0 failed") {
+		t.Errorf("expected success summary in output, got: %s", output)
 	}
 
-	// Check for success indicators
-	if !strings.Contains(output, "✅") {
-		t.Errorf("expected success indicators in output, got: %s", output)
-	}
-
-	// Check that the command was executed (should contain "test" in output)
-	if !strings.Contains(output, "test") {
-		t.Errorf("expected command output 'test' in output, got: %s", output)
+	// Check for log location message
+	if !strings.Contains(output, "Logs are available at:") {
+		t.Errorf("expected log location message in output, got: %s", output)
 	}
 }
 

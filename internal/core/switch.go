@@ -36,6 +36,8 @@ func switchBranches(root, target string, workers int, cfg *Config) {
 
 	progress := NewProgressState(repos, "Switching branches")
 	progress.render()
+	progress.StartInput()
+	defer progress.StopInput()
 
 	repoCh := make(chan RepoInfo, len(repos))
 	resCh := make(chan SwitchResult, len(repos))
@@ -84,7 +86,9 @@ func switchBranches(root, target string, workers int, cfg *Config) {
 		}
 	}
 
-	fmt.Printf("\n\n--- Summary ---\n")
+	progress.RenderFinal()
+
+	fmt.Printf("\n--- Summary ---\n")
 	fmt.Printf("Switched %d repos to %s\n", ok, target)
 	if fail > 0 {
 		fmt.Printf("Failed %d repos:\n", fail)

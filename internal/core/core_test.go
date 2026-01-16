@@ -167,12 +167,12 @@ func TestProcessSingleRepo(t *testing.T) {
 
 	// Test switching to existing branch (main/master)
 	repo := RepoInfo{Path: tmpDir, RelPath: "test"}
-	result := processSingleRepo(repo, "main")
+	result := processSingleRepo(repo, "main", nil)
 	if result.Success {
 		branch, _ := getBranch(tmpDir)
 		if branch != "main" && branch != "master" {
 			// If main doesn't exist, try master
-			result = processSingleRepo(repo, "master")
+			result = processSingleRepo(repo, "master", nil)
 		}
 	}
 
@@ -181,7 +181,7 @@ func TestProcessSingleRepo(t *testing.T) {
 	}
 
 	// Test switching to non-existent branch
-	result = processSingleRepo(repo, "nonexistent")
+	result = processSingleRepo(repo, "nonexistent", nil)
 	if result.Success {
 		t.Error("expected failure for non-existent branch")
 	}

@@ -14,8 +14,6 @@ func PromptViewLogs() bool {
 		return false
 	}
 
-
-
 	if (fileInfo.Mode() & os.ModeCharDevice) == 0 {
 		return false
 	}
@@ -30,7 +28,6 @@ func PromptViewLogs() bool {
 
 	input = strings.TrimSpace(strings.ToLower(input))
 
-
 	return input == "y" || input == "yes"
 }
 
@@ -39,7 +36,6 @@ func DisplayLogs(logManager *LogManager, results []CommandResult) {
 	fmt.Println()
 
 	allLogs := logManager.GetAllLogPaths()
-
 
 	fmt.Println("--- Failed Repositories ---")
 	hasFailures := false
@@ -86,4 +82,39 @@ func displayRepoLog(logManager *LogManager, relPath, status string) {
 		fmt.Println(content)
 	}
 	fmt.Println("---")
+}
+
+func DisplaySwitchLogs(logManager *LogManager, results []SwitchResult) {
+	fmt.Println("\n=== Detailed Logs ===")
+	fmt.Println()
+
+	allLogs := logManager.GetAllLogPaths()
+
+	fmt.Println("--- Failed Repositories ---")
+	hasFailures := false
+	for _, res := range results {
+		if !res.Success {
+			hasFailures = true
+			displayRepoLog(logManager, res.RelPath, "FAILED")
+		}
+	}
+	if !hasFailures {
+		fmt.Println("(none)")
+	}
+
+	fmt.Println("\n--- Successful Repositories ---")
+	hasSuccess := false
+	for _, res := range results {
+		if res.Success {
+			hasSuccess = true
+			displayRepoLog(logManager, res.RelPath, "SUCCESS")
+		}
+	}
+	if !hasSuccess {
+		fmt.Println("(none)")
+	}
+
+	fmt.Printf("\n--- Log Location ---\n")
+	fmt.Printf("Logs are stored in: %s\n", logManager.GetTempDir())
+	fmt.Printf("Total log files: %d\n", len(allLogs))
 }

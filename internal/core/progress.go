@@ -110,11 +110,10 @@ func (ps *ProgressState) renderLocked() {
 func (ps *ProgressState) renderANSI() {
 	var buf strings.Builder
 
-	buf.WriteString("\033[s")
-
+	// Move cursor up to overwrite previous output (instead of save/restore which leaves history)
 	if ps.linesDrawn > 0 {
-		buf.WriteString("\033[u")
-		buf.WriteString("\033[J")
+		fmt.Fprintf(&buf, "\033[%dA", ps.linesDrawn) // Move up N lines
+		buf.WriteString("\033[J")                    // Clear from cursor to end
 	}
 
 	waiting, processing, completed, failed := ps.countStatuses()
@@ -145,7 +144,17 @@ func (ps *ProgressState) renderANSI() {
 	fmt.Fprintf(&buf, "Status: %d waiting, %d processing, %d done, %d failed (%d/%d)\n",
 		waiting, processing, completed, failed, completed+failed, ps.totalRepos)
 
-	ps.linesDrawn++
+	// Count lines for next update
+	lineCount := 1                 // "Progress: ..." line
+	lineCount += endIdx - startIdx // repo lines
+	if ps.paginationMode {
+		lineCount++ // pagination line
+	} else if len(ps.repos) > maxDisplayedRepos {
+		lineCount++ // "... and N more" line
+	}
+	lineCount++ // status line
+
+	ps.linesDrawn = lineCount
 
 	_, _ = ps.writer.Write([]byte(buf.String()))
 }

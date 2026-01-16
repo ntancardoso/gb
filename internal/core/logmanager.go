@@ -30,7 +30,6 @@ func (lm *LogManager) CreateLogFile(relPath string) (*os.File, error) {
 	lm.mu.Lock()
 	defer lm.mu.Unlock()
 
-
 	sanitized := strings.ReplaceAll(relPath, "/", "_")
 	sanitized = strings.ReplaceAll(sanitized, "\\", "_")
 
@@ -55,7 +54,6 @@ func (lm *LogManager) GetLogPath(relPath string) (string, bool) {
 func (lm *LogManager) GetAllLogPaths() map[string]string {
 	lm.mu.Lock()
 	defer lm.mu.Unlock()
-
 
 	result := make(map[string]string, len(lm.logFiles))
 	for k, v := range lm.logFiles {

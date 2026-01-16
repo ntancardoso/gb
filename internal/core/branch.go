@@ -246,13 +246,11 @@ func executeCommandInRepos(root, command string, workers int, cfg *Config) {
 	fmt.Printf("Found %d repos (filtered from %d discovered), executing 'git %s' with %d workers...\n",
 		len(repos), len(allRepos), command, workers)
 
-
 	logManager, err := NewLogManager()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating log manager: %s\n", err)
 		os.Exit(1)
 	}
-
 
 	progress := NewProgressState(repos, fmt.Sprintf("Executing 'git %s'", command))
 	progress.render()
@@ -271,7 +269,6 @@ func executeCommandInRepos(root, command string, workers int, cfg *Config) {
 
 				progress.UpdateStatus(r.RelPath, statusProcessing, "")
 
-
 				logFile, err := logManager.CreateLogFile(r.RelPath)
 				var retries int
 				var cmdErr error
@@ -285,7 +282,6 @@ func executeCommandInRepos(root, command string, workers int, cfg *Config) {
 						Error:   cmdErr,
 						Retries: retries,
 					}
-
 
 					if cmdErr != nil {
 						errorMsg := cmdErr.Error()
@@ -309,7 +305,6 @@ func executeCommandInRepos(root, command string, workers int, cfg *Config) {
 						Error:   cmdErr,
 						Retries: retries,
 					}
-
 
 					if cmdErr != nil {
 						errorMsg := cmdErr.Error()
@@ -337,7 +332,6 @@ func executeCommandInRepos(root, command string, workers int, cfg *Config) {
 		close(resCh)
 	}()
 
-
 	var results []CommandResult
 	success, failed := 0, 0
 	for res := range resCh {
@@ -354,7 +348,6 @@ func executeCommandInRepos(root, command string, workers int, cfg *Config) {
 	fmt.Printf("\n--- Summary ---\n")
 	fmt.Printf("Executed 'git %s' in %d repos: %d succeeded, %d failed\n",
 		command, success+failed, success, failed)
-
 
 	if PromptViewLogs() {
 		DisplayLogs(logManager, results)
@@ -394,13 +387,11 @@ func executeShellInRepos(root, command string, workers int, cfg *Config) {
 	fmt.Printf("Found %d repos (filtered from %d discovered), executing '%s' with %d workers...\n",
 		len(repos), len(allRepos), command, workers)
 
-
 	logManager, err := NewLogManager()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating log manager: %s\n", err)
 		os.Exit(1)
 	}
-
 
 	progress := NewProgressState(repos, fmt.Sprintf("Executing '%s'", command))
 	progress.render()
@@ -418,7 +409,6 @@ func executeShellInRepos(root, command string, workers int, cfg *Config) {
 			for r := range repoCh {
 
 				progress.UpdateStatus(r.RelPath, statusProcessing, "")
-
 
 				logFile, err := logManager.CreateLogFile(r.RelPath)
 				var cmdErr error
@@ -442,7 +432,6 @@ func executeShellInRepos(root, command string, workers int, cfg *Config) {
 						Error:   cmdErr,
 					}
 
-
 					if cmdErr != nil {
 						errorMsg := cmdErr.Error()
 						if len(errorMsg) > 50 {
@@ -464,7 +453,6 @@ func executeShellInRepos(root, command string, workers int, cfg *Config) {
 						Output:  "",
 						Error:   cmdErr,
 					}
-
 
 					if cmdErr != nil {
 						errorMsg := cmdErr.Error()
@@ -492,7 +480,6 @@ func executeShellInRepos(root, command string, workers int, cfg *Config) {
 		close(resCh)
 	}()
 
-
 	var results []CommandResult
 	success, failed := 0, 0
 	for res := range resCh {
@@ -509,7 +496,6 @@ func executeShellInRepos(root, command string, workers int, cfg *Config) {
 	fmt.Printf("\n--- Summary ---\n")
 	fmt.Printf("Executed '%s' in %d repos: %d succeeded, %d failed\n",
 		command, success+failed, success, failed)
-
 
 	if PromptViewLogs() {
 		DisplayLogs(logManager, results)

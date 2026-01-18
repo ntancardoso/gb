@@ -109,7 +109,6 @@ func (s *repoScanner) walkFunc(root string) func(string, os.DirEntry, error) err
 
 		name := d.Name()
 
-		// Check if directory should be skipped
 		if s.cfg.shouldSkipDir(name) {
 			s.skipped++
 			return filepath.SkipDir

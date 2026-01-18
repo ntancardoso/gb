@@ -1,4 +1,3 @@
-// Package core implements git repository discovery and branch switching operations.
 package core
 
 import (
@@ -10,14 +9,11 @@ import (
 )
 
 const (
-	defaultWorkers = 20
+	defaultWorkers  = 20
+	defaultPageSize = 20
 )
 
-var (
-	// version is set at build time via ldflags
-	// Example: go build -ldflags "-X github.com/ntancardoso/gb/internal/core.version=v1.0.0"
-	version = "dev"
-)
+var version = "dev"
 
 var (
 	defaultSkipDirs = []string{
@@ -27,25 +23,23 @@ var (
 	}
 )
 
-// Config holds runtime configuration for repository operations.
-// It manages which directories should be skipped or included during repository scanning.
 type Config struct {
 	skipSet    map[string]struct{}
 	includeSet map[string]struct{}
+	PageSize   int
 }
 
-func newConfig(skipDirs, includeDirs []string) *Config {
+func newConfig(skipDirs, includeDirs []string, pageSize int) *Config {
 	cfg := &Config{
 		skipSet:    make(map[string]struct{}),
 		includeSet: make(map[string]struct{}),
+		PageSize:   pageSize,
 	}
 
-	// Build include set first
 	for _, dir := range includeDirs {
 		cfg.includeSet[dir] = struct{}{}
 	}
 
-	// Build skip set, excluding any included directories
 	for _, dir := range skipDirs {
 		if _, included := cfg.includeSet[dir]; !included {
 			cfg.skipSet[dir] = struct{}{}
@@ -112,8 +106,36 @@ func (cfg *Config) filterReposForExecution(repos []RepoInfo) []RepoInfo {
 	return filtered
 }
 
-// Run is the main entry point for the gb CLI tool.
+func reorderArgs(args []string) []string {
+	var flags []string
+	var positional []string
+
+	i := 0
+	for i < len(args) {
+		arg := args[i]
+		if strings.HasPrefix(arg, "-") {
+			flags = append(flags, arg)
+			boolFlags := map[string]bool{
+				"-l": true, "--list": true,
+				"-v": true, "--version": true,
+				"-h": true, "--help": true,
+			}
+			if !boolFlags[arg] && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				i++
+				flags = append(flags, args[i])
+			}
+		} else {
+			positional = append(positional, arg)
+		}
+		i++
+	}
+
+	return append(flags, positional...)
+}
+
 func Run(args []string) error {
+	args = reorderArgs(args)
+
 	fs := flag.NewFlagSet("gb", flag.ContinueOnError)
 
 	listBranches := fs.Bool("list", false, "List all branches found in repositories")
@@ -134,6 +156,9 @@ func Run(args []string) error {
 	includeDirsFlag := fs.String("includeDirs", "", "Comma-separated list of directories to include in command execution (only execute in these directories)")
 	fs.StringVar(includeDirsFlag, "i", "", "Directories to include in execution (shorthand)")
 
+	pageSize := fs.Int("size", defaultPageSize, "Number of repos to display per page")
+	fs.IntVar(pageSize, "ps", defaultPageSize, "Repos per page (shorthand)")
+
 	showVersion := fs.Bool("version", false, "Show version information")
 	fs.BoolVar(showVersion, "v", false, "Show version (shorthand)")
 
@@ -146,6 +171,7 @@ func Run(args []string) error {
 		fmt.Println("  -c, --cmd string        Execute a git command in all repositories")
 		fmt.Println("  -sh, --shell string     Execute a shell command in all repositories")
 		fmt.Println("  -w, --workers int       Number of concurrent workers (default 20)")
+		fmt.Println("  -ps, --size int         Number of repos to display per page (default 20)")
 		fmt.Println("  -s, --skipDirs string   Comma-separated list of directories to exclude from execution")
 		fmt.Println("  -i, --includeDirs string")
 		fmt.Println("                          Comma-separated list of directories to include in execution")
@@ -167,7 +193,6 @@ func Run(args []string) error {
 
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
-			// Help was requested, this is not an error
 			return nil
 		}
 		return err
@@ -181,7 +206,7 @@ func Run(args []string) error {
 	skipDirs := parseCommaSeparated(*skipDirsFlag, defaultSkipDirs)
 	includeDirs := parseCommaSeparated(*includeDirsFlag, nil)
 
-	cfg := newConfig(skipDirs, includeDirs)
+	cfg := newConfig(skipDirs, includeDirs, *pageSize)
 
 	root, _ := os.Getwd()
 	root = resolveRoot(root)

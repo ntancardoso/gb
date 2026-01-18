@@ -64,7 +64,7 @@ func switchBranches(root, target string, workers int, cfg *Config) {
 				res := processSingleRepo(r, target, logFile)
 
 				if logFile != nil {
-					logFile.Close()
+					_ = logFile.Close()
 				}
 
 				if res.Success {
@@ -121,7 +121,7 @@ func switchBranches(root, target string, workers int, cfg *Config) {
 func processSingleRepo(repo RepoInfo, targetBranch string, logFile *os.File) SwitchResult {
 	log := func(format string, args ...interface{}) {
 		if logFile != nil {
-			fmt.Fprintf(logFile, format+"\n", args...)
+			_, _ = fmt.Fprintf(logFile, format+"\n", args...)
 		}
 	}
 

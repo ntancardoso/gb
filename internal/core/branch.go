@@ -82,12 +82,12 @@ func executeGitCommandWithRetryToFile(ctx context.Context, dir string, logFile *
 
 		if cmdCtx.Err() != nil {
 			if attempt < maxRetries-1 {
-				fmt.Fprintf(logFile, "\n--- Retry %d/%d after timeout ---\n", attempt+1, maxRetries)
+				_, _ = fmt.Fprintf(logFile, "\n--- Retry %d/%d after timeout ---\n", attempt+1, maxRetries)
 				time.Sleep(retryDelay)
 				continue
 			}
 		} else {
-			fmt.Fprintf(logFile, "\n--- Command failed: %s ---\n", lastErr)
+			_, _ = fmt.Fprintf(logFile, "\n--- Command failed: %s ---\n", lastErr)
 			return attempt, lastErr
 		}
 	}
@@ -113,7 +113,7 @@ func executeShellCommandToFile(ctx context.Context, dir string, logFile *os.File
 	err := cmd.Run()
 
 	if err != nil {
-		fmt.Fprintf(logFile, "\n--- Command failed: %s ---\n", err)
+		_, _ = fmt.Fprintf(logFile, "\n--- Command failed: %s ---\n", err)
 	}
 
 	return err
@@ -297,7 +297,7 @@ func executeCommandInRepos(root, command string, workers int, cfg *Config) {
 				} else {
 
 					retries, cmdErr = executeGitCommandWithRetryToFile(context.Background(), r.Path, logFile, args...)
-					logFile.Close()
+					_ = logFile.Close()
 
 					result := CommandResult{
 						RelPath: r.RelPath,
@@ -446,7 +446,7 @@ func executeShellInRepos(root, command string, workers int, cfg *Config) {
 				} else {
 
 					cmdErr = executeShellCommandToFile(context.Background(), r.Path, logFile, command)
-					logFile.Close()
+					_ = logFile.Close()
 
 					result := CommandResult{
 						RelPath: r.RelPath,

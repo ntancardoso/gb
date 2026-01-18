@@ -298,7 +298,7 @@ func (ps *ProgressState) StopInput() {
 	}
 
 	close(ps.stopInput)
-	keyboard.Close()
+	_ = keyboard.Close()
 }
 
 func (ps *ProgressState) handleInput() {

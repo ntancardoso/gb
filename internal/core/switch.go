@@ -33,14 +33,13 @@ func switchBranches(root, target string, workers int, cfg *Config) {
 
 	fmt.Printf("Found %d repos (filtered from %d discovered), switching to %s with %d workers...\n", len(repos), len(allRepos), target, workers)
 
-	// Create LogManager for capturing operation logs
 	logManager, err := NewLogManager()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating log manager: %s\n", err)
 		os.Exit(1)
 	}
 
-	progress := NewProgressState(repos, "Switching branches")
+	progress := NewProgressState(repos, "Switching branches", cfg.PageSize)
 	progress.render()
 	progress.StartInput()
 	defer progress.StopInput()
@@ -57,10 +56,9 @@ func switchBranches(root, target string, workers int, cfg *Config) {
 			for r := range repoCh {
 				progress.UpdateStatus(r.RelPath, statusProcessing, "")
 
-				// Create log file for this repo
 				logFile, err := logManager.CreateLogFile(r.RelPath)
 				if err != nil {
-					logFile = nil // Fallback: process without logging
+					logFile = nil
 				}
 
 				res := processSingleRepo(r, target, logFile)
@@ -92,7 +90,6 @@ func switchBranches(root, target string, workers int, cfg *Config) {
 		close(resCh)
 	}()
 
-	// Collect results into slice
 	var results []SwitchResult
 	var ok, fail int
 	for res := range resCh {
@@ -109,7 +106,6 @@ func switchBranches(root, target string, workers int, cfg *Config) {
 	fmt.Printf("\n--- Summary ---\n")
 	fmt.Printf("Switched %d repos to %s, %d failed\n", ok, target, fail)
 
-	// Prompt for log viewing (same pattern as executeCommandInRepos)
 	if PromptViewLogs() {
 		DisplaySwitchLogs(logManager, results)
 	} else {
@@ -123,7 +119,6 @@ func switchBranches(root, target string, workers int, cfg *Config) {
 }
 
 func processSingleRepo(repo RepoInfo, targetBranch string, logFile *os.File) SwitchResult {
-	// Helper to log messages
 	log := func(format string, args ...interface{}) {
 		if logFile != nil {
 			fmt.Fprintf(logFile, format+"\n", args...)
@@ -133,7 +128,6 @@ func processSingleRepo(repo RepoInfo, targetBranch string, logFile *os.File) Swi
 	log("=== Processing %s ===", repo.RelPath)
 	log("Target branch: %s", targetBranch)
 
-	// Check if local branch exists
 	localCheck := exec.Command("git", "show-ref", "--verify", "--quiet", "refs/heads/"+targetBranch)
 	localCheck.Dir = repo.Path
 	branchExists := localCheck.Run() == nil

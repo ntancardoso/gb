@@ -11,22 +11,18 @@ import (
 func TestGetBranch(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Setup git repo
 	runCmd(t, tmpDir, "git", "init")
 	runCmd(t, tmpDir, "git", "config", "user.name", "test")
 	runCmd(t, tmpDir, "git", "config", "user.email", "test@test.com")
 
-	// Test no commits
 	branch, err := getBranch(tmpDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Git 2.28+ defaults to 'main' branch even without commits
 	if branch != "no commits" && branch != "main" && branch != "master" {
 		t.Errorf("expected 'no commits', 'main', or 'master', got %s", branch)
 	}
 
-	// Add commit
 	writeFile(t, tmpDir, "test.txt", "test")
 	runCmd(t, tmpDir, "git", "add", ".")
 	runCmd(t, tmpDir, "git", "commit", "-m", "initial")
@@ -39,7 +35,6 @@ func TestGetBranch(t *testing.T) {
 		t.Errorf("expected main/master, got %s", branch)
 	}
 
-	// Test different branch
 	runCmd(t, tmpDir, "git", "checkout", "-b", "feature")
 	branch, err = getBranch(tmpDir)
 	if err != nil {
@@ -49,7 +44,6 @@ func TestGetBranch(t *testing.T) {
 		t.Errorf("expected 'feature', got %s", branch)
 	}
 
-	// Test detached HEAD
 	hash := strings.TrimSpace(string(runCmdOutput(t, tmpDir, "git", "rev-parse", "HEAD")))
 	runCmd(t, tmpDir, "git", "checkout", hash)
 	branch, err = getBranch(tmpDir)
@@ -64,25 +58,22 @@ func TestGetBranch(t *testing.T) {
 func TestFindGitRepos(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Create nested structure
 	createGitRepo(t, filepath.Join(tmpDir, "repo1"))
 	createGitRepo(t, filepath.Join(tmpDir, "nested", "repo2"))
 	createDir(t, filepath.Join(tmpDir, "notgit"))
-	createGitRepo(t, filepath.Join(tmpDir, "vendor", "repo3")) // should be skipped
+	createGitRepo(t, filepath.Join(tmpDir, "vendor", "repo3"))
 
-	cfg := newConfig(defaultSkipDirs, nil)
+	cfg := newConfig(defaultSkipDirs, nil, 20)
 	repos, err := findGitRepos(tmpDir, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Filter out any repos that should be skipped
 	expectedRepos := []string{"repo1", filepath.Join("nested", "repo2")}
 	actualCount := 0
 	paths := make(map[string]bool)
 
 	for _, r := range repos {
-		// Skip vendor repos as they should be filtered
 		if !strings.Contains(r.RelPath, "vendor") {
 			paths[r.RelPath] = true
 			actualCount++
@@ -103,7 +94,6 @@ func TestFindGitRepos(t *testing.T) {
 func TestListAllBranches(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Create repos with different branches
 	repo1 := filepath.Join(tmpDir, "repo1")
 	createGitRepo(t, repo1)
 
@@ -111,12 +101,11 @@ func TestListAllBranches(t *testing.T) {
 	createGitRepo(t, repo2)
 	runCmd(t, repo2, "git", "checkout", "-b", "feature")
 
-	// Capture output
 	oldStdout := os.Stdout
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	cfg := newConfig(defaultSkipDirs, nil)
+	cfg := newConfig(defaultSkipDirs, nil, 20)
 	listAllBranches(tmpDir, 2, cfg)
 
 	_ = w.Close()
@@ -134,24 +123,19 @@ func TestListAllBranches(t *testing.T) {
 func TestSwitchBranches(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Create repo with main and feature branches
 	repo1 := filepath.Join(tmpDir, "repo1")
 	createGitRepo(t, repo1)
 
-	// Create feature branch
 	runCmd(t, repo1, "git", "checkout", "-b", "feature")
 	writeFile(t, repo1, "feature.txt", "feature")
 	runCmd(t, repo1, "git", "add", ".")
 	runCmd(t, repo1, "git", "commit", "-m", "feature commit")
 
-	// Switch back to main
 	runCmd(t, repo1, "git", "checkout", "main")
 
-	// Test switching to feature
-	cfg := newConfig(defaultSkipDirs, nil)
+	cfg := newConfig(defaultSkipDirs, nil, 20)
 	switchBranches(tmpDir, "feature", 1, cfg)
 
-	// Verify we're on feature branch
 	branch, err := getBranch(repo1)
 	if err != nil {
 		t.Fatal(err)
@@ -165,13 +149,11 @@ func TestProcessSingleRepo(t *testing.T) {
 	tmpDir := t.TempDir()
 	createGitRepo(t, tmpDir)
 
-	// Test switching to existing branch (main/master)
 	repo := RepoInfo{Path: tmpDir, RelPath: "test"}
 	result := processSingleRepo(repo, "main", nil)
 	if result.Success {
 		branch, _ := getBranch(tmpDir)
 		if branch != "main" && branch != "master" {
-			// If main doesn't exist, try master
 			result = processSingleRepo(repo, "master", nil)
 		}
 	}
@@ -180,7 +162,6 @@ func TestProcessSingleRepo(t *testing.T) {
 		t.Errorf("expected success, got error: %s", result.Error)
 	}
 
-	// Test switching to non-existent branch
 	result = processSingleRepo(repo, "nonexistent", nil)
 	if result.Success {
 		t.Error("expected failure for non-existent branch")
@@ -193,19 +174,17 @@ func TestProcessSingleRepo(t *testing.T) {
 func TestExecuteCommandInRepos(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Create repos
 	repo1 := filepath.Join(tmpDir, "repo1")
 	createGitRepo(t, repo1)
 
 	repo2 := filepath.Join(tmpDir, "repo2")
 	createGitRepo(t, repo2)
 
-	// Capture output
 	oldStdout := os.Stdout
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	cfg := newConfig(defaultSkipDirs, nil)
+	cfg := newConfig(defaultSkipDirs, nil, 20)
 	executeCommandInRepos(tmpDir, "status", 2, cfg)
 
 	_ = w.Close()
@@ -215,12 +194,10 @@ func TestExecuteCommandInRepos(t *testing.T) {
 	n, _ := r.Read(buf)
 	output := string(buf[:n])
 
-	// Check for summary line indicating success
 	if !strings.Contains(output, "2 succeeded, 0 failed") {
 		t.Errorf("expected success summary in output, got: %s", output)
 	}
 
-	// Check for log location message
 	if !strings.Contains(output, "Logs are available at:") {
 		t.Errorf("expected log location message in output, got: %s", output)
 	}
@@ -229,28 +206,23 @@ func TestExecuteCommandInRepos(t *testing.T) {
 func TestExecuteCommandInReposWithError(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Create a git repo
 	repo1 := filepath.Join(tmpDir, "repo1")
 	createGitRepo(t, repo1)
 
-	// Test individual command execution that will fail
 	cmd := exec.Command("git", "invalid-subcommand-that-does-not-exist")
 	cmd.Dir = repo1
 	output, err := cmd.CombinedOutput()
 
-	// Verify that git command fails as expected
 	if err == nil {
 		t.Error("expected git command to fail, but it succeeded")
 	}
 
-	// Test CommandResult structure (this is what the real function uses)
 	result := CommandResult{
 		RelPath: "repo1",
 		Output:  string(output),
 		Error:   err,
 	}
 
-	// Verify error result is properly structured
 	if result.Error == nil {
 		t.Error("expected CommandResult to have an error")
 	}
@@ -263,7 +235,6 @@ func TestExecuteCommandInReposWithError(t *testing.T) {
 		t.Error("expected some output from failed git command")
 	}
 
-	// Test that output contains error information
 	if !strings.Contains(strings.ToLower(result.Output), "unknown") && !strings.Contains(strings.ToLower(result.Output), "invalid") {
 		t.Errorf("expected error message in output, got: %s", result.Output)
 	}
@@ -272,19 +243,17 @@ func TestExecuteCommandInReposWithError(t *testing.T) {
 func TestExecuteShellInRepos(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Create repos
 	repo1 := filepath.Join(tmpDir, "repo1")
 	createGitRepo(t, repo1)
 
 	repo2 := filepath.Join(tmpDir, "repo2")
 	createGitRepo(t, repo2)
 
-	// Capture output
 	oldStdout := os.Stdout
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	cfg := newConfig(defaultSkipDirs, nil)
+	cfg := newConfig(defaultSkipDirs, nil, 20)
 	executeShellInRepos(tmpDir, "echo test", 2, cfg)
 
 	_ = w.Close()
@@ -294,31 +263,26 @@ func TestExecuteShellInRepos(t *testing.T) {
 	n, _ := r.Read(buf)
 	output := string(buf[:n])
 
-	// Check for summary line indicating success
 	if !strings.Contains(output, "2 succeeded, 0 failed") {
 		t.Errorf("expected success summary in output, got: %s", output)
 	}
 
-	// Check for log location message
 	if !strings.Contains(output, "Logs are available at:") {
 		t.Errorf("expected log location message in output, got: %s", output)
 	}
 }
 
 func TestRun(t *testing.T) {
-	// Test list flag
 	err := Run([]string{"-list"})
 	if err != nil {
 		t.Errorf("list command failed: %v", err)
 	}
 
-	// Test missing branch name
 	err = Run([]string{})
 	if err == nil {
 		t.Error("expected error for missing branch name")
 	}
 
-	// Test with branch name
 	tmpDir := t.TempDir()
 	oldDir, _ := os.Getwd()
 	_ = os.Chdir(tmpDir)
@@ -327,23 +291,15 @@ func TestRun(t *testing.T) {
 	createGitRepo(t, filepath.Join(tmpDir, "repo1"))
 
 	_ = Run([]string{"main"})
-	// This might fail due to branch not existing, which is expected
-	// The important part is that it runs without panicking
 
-	// Test command execution flag
 	_ = Run([]string{"-c", "status"})
-	// This might fail if no repos are found, which is expected
-	// The important part is that it runs without panicking
 
-	// Test shell execution flag
 	_ = Run([]string{"-sh", "echo test"})
-	// This might fail if no repos are found, which is expected
-	// The important part is that it runs without panicking
 }
 
 func TestConfigSkipSet(t *testing.T) {
 	dirs := []string{"node_modules", "vendor", ".git"}
-	cfg := newConfig(dirs, nil)
+	cfg := newConfig(dirs, nil, 20)
 
 	if len(cfg.skipSet) != 3 {
 		t.Errorf("expected 3 items, got %d", len(cfg.skipSet))
@@ -355,9 +311,8 @@ func TestConfigSkipSet(t *testing.T) {
 }
 
 func TestConfigShouldSkipDir(t *testing.T) {
-	cfg := newConfig(defaultSkipDirs, []string{"vendor"})
+	cfg := newConfig(defaultSkipDirs, []string{"vendor"}, 20)
 
-	// Should skip hidden dirs except .git
 	if !cfg.shouldSkipDir(".hidden") {
 		t.Error("should skip .hidden")
 	}
@@ -366,7 +321,6 @@ func TestConfigShouldSkipDir(t *testing.T) {
 		t.Error("should not skip .git")
 	}
 
-	// Should not skip included dirs
 	if cfg.shouldSkipDir("vendor") {
 		t.Error("should not skip included vendor")
 	}
@@ -380,14 +334,12 @@ func TestResolveRoot(t *testing.T) {
 		t.Error("resolved root should not be empty")
 	}
 
-	// Test with non-existent path
 	resolved = resolveRoot("/non/existent/path")
 	if resolved != "/non/existent/path" {
 		t.Error("should return original path for non-existent paths")
 	}
 }
 
-// Helper functions
 func runCmd(t *testing.T, dir string, name string, args ...string) {
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
@@ -493,7 +445,7 @@ func TestShouldExecuteInRepo(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := newConfig(tt.skipDirs, tt.includeDirs)
+			cfg := newConfig(tt.skipDirs, tt.includeDirs, 20)
 			result := cfg.shouldExecuteInRepo(tt.repoPath)
 			if result != tt.expected {
 				t.Errorf("shouldExecuteInRepo() = %v, expected %v", result, tt.expected)
@@ -661,7 +613,7 @@ func TestFilterReposForExecution(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := newConfig(tt.skipDirs, tt.includeDirs)
+			cfg := newConfig(tt.skipDirs, tt.includeDirs, 20)
 			filtered := cfg.filterReposForExecution(repos)
 
 			if len(filtered) != tt.expectedCount {

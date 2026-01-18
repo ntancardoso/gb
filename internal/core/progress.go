@@ -6,17 +6,19 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/eiannone/keyboard"
 )
 
 const (
-	maxDisplayedRepos = 30
-	statusWaiting     = "waiting"
-	statusProcessing  = "processing"
-	statusCompleted   = "completed"
-	statusFailed      = "failed"
+	statusWaiting    = "waiting"
+	statusProcessing = "processing"
+	statusCompleted  = "completed"
+	statusFailed     = "failed"
 )
+
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 type repoStatus struct {
 	state   string
@@ -24,37 +26,42 @@ type repoStatus struct {
 }
 
 type ProgressState struct {
-	repos          []RepoInfo
-	statuses       []repoStatus
-	mu             sync.Mutex
-	totalRepos     int
-	writer         io.Writer
-	supportsANSI   bool
-	linesDrawn     int
-	operationName  string
-	currentPage    int
-	paginationMode bool
-	stopInput      chan struct{}
+	repos             []RepoInfo
+	statuses          []repoStatus
+	mu                sync.Mutex
+	totalRepos        int
+	maxDisplayedRepos int
+	writer            io.Writer
+	supportsANSI      bool
+	linesDrawn        int
+	operationName     string
+	currentPage       int
+	paginationMode    bool
+	stopInput         chan struct{}
+	stopSpinner       chan struct{}
+	spinnerIndex      int
 }
 
-func NewProgressState(repos []RepoInfo, operationName string) *ProgressState {
+func NewProgressState(repos []RepoInfo, operationName string, pageSize int) *ProgressState {
 	statuses := make([]repoStatus, len(repos))
 	for i := range statuses {
 		statuses[i] = repoStatus{state: statusWaiting}
 	}
 
-	paginationMode := len(repos) > maxDisplayedRepos
+	paginationMode := len(repos) > pageSize
 
 	return &ProgressState{
-		repos:          repos,
-		statuses:       statuses,
-		totalRepos:     len(repos),
-		writer:         os.Stdout,
-		supportsANSI:   supportsANSI(),
-		operationName:  operationName,
-		currentPage:    0,
-		paginationMode: paginationMode,
-		stopInput:      make(chan struct{}),
+		repos:             repos,
+		statuses:          statuses,
+		totalRepos:        len(repos),
+		maxDisplayedRepos: pageSize,
+		writer:            os.Stdout,
+		supportsANSI:      supportsANSI(),
+		operationName:     operationName,
+		currentPage:       0,
+		paginationMode:    paginationMode,
+		stopInput:         make(chan struct{}),
+		stopSpinner:       make(chan struct{}),
 	}
 }
 
@@ -110,23 +117,26 @@ func (ps *ProgressState) renderLocked() {
 func (ps *ProgressState) renderANSI() {
 	var buf strings.Builder
 
-	// Move cursor up to overwrite previous output (instead of save/restore which leaves history)
 	if ps.linesDrawn > 0 {
-		fmt.Fprintf(&buf, "\033[%dA", ps.linesDrawn) // Move up N lines
-		buf.WriteString("\033[J")                    // Clear from cursor to end
+		fmt.Fprintf(&buf, "\033[%dA", ps.linesDrawn)
+		buf.WriteString("\033[J")
 	}
 
 	waiting, processing, completed, failed := ps.countStatuses()
 
-	fmt.Fprintf(&buf, "Progress: %s...\n", ps.operationName)
+	if completed+failed < ps.totalRepos {
+		fmt.Fprintf(&buf, "%s %s...\n", spinnerFrames[ps.spinnerIndex], ps.operationName)
+	} else {
+		fmt.Fprintf(&buf, "✓ %s - Done\n", ps.operationName)
+	}
 
 	var startIdx, endIdx int
 	if ps.paginationMode {
-		startIdx = ps.currentPage * maxDisplayedRepos
-		endIdx = min(startIdx+maxDisplayedRepos, len(ps.repos))
+		startIdx = ps.currentPage * ps.maxDisplayedRepos
+		endIdx = min(startIdx+ps.maxDisplayedRepos, len(ps.repos))
 	} else {
 		startIdx = 0
-		endIdx = min(maxDisplayedRepos, len(ps.repos))
+		endIdx = min(ps.maxDisplayedRepos, len(ps.repos))
 	}
 
 	for i := startIdx; i < endIdx; i++ {
@@ -137,22 +147,21 @@ func (ps *ProgressState) renderANSI() {
 
 	if ps.paginationMode {
 		fmt.Fprintf(&buf, "Page %d/%d (↑/↓ PgUp/PgDn to navigate)\n", ps.currentPage+1, ps.totalPages())
-	} else if len(ps.repos) > maxDisplayedRepos {
-		fmt.Fprintf(&buf, "... and %d more repos\n", len(ps.repos)-maxDisplayedRepos)
+	} else if len(ps.repos) > ps.maxDisplayedRepos {
+		fmt.Fprintf(&buf, "... and %d more repos\n", len(ps.repos)-ps.maxDisplayedRepos)
 	}
 
 	fmt.Fprintf(&buf, "Status: %d waiting, %d processing, %d done, %d failed (%d/%d)\n",
 		waiting, processing, completed, failed, completed+failed, ps.totalRepos)
 
-	// Count lines for next update
-	lineCount := 1                 // "Progress: ..." line
-	lineCount += endIdx - startIdx // repo lines
+	lineCount := 1
+	lineCount += endIdx - startIdx
 	if ps.paginationMode {
-		lineCount++ // pagination line
-	} else if len(ps.repos) > maxDisplayedRepos {
-		lineCount++ // "... and N more" line
+		lineCount++
+	} else if len(ps.repos) > ps.maxDisplayedRepos {
+		lineCount++
 	}
-	lineCount++ // status line
+	lineCount++
 
 	ps.linesDrawn = lineCount
 
@@ -234,10 +243,14 @@ func (ps *ProgressState) totalPages() int {
 	if !ps.paginationMode {
 		return 1
 	}
-	return (len(ps.repos) + maxDisplayedRepos - 1) / maxDisplayedRepos
+	return (len(ps.repos) + ps.maxDisplayedRepos - 1) / ps.maxDisplayedRepos
 }
 
 func (ps *ProgressState) StartInput() {
+	if ps.supportsANSI {
+		go ps.runSpinner()
+	}
+
 	if !ps.paginationMode || !ps.supportsANSI {
 		return
 	}
@@ -255,7 +268,31 @@ func (ps *ProgressState) StartInput() {
 	go ps.handleInput()
 }
 
+func (ps *ProgressState) runSpinner() {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ps.stopSpinner:
+			return
+		case <-ticker.C:
+			ps.mu.Lock()
+			_, _, completed, failed := ps.countStatuses()
+			if completed+failed < ps.totalRepos {
+				ps.spinnerIndex = (ps.spinnerIndex + 1) % len(spinnerFrames)
+				ps.renderLocked()
+			}
+			ps.mu.Unlock()
+		}
+	}
+}
+
 func (ps *ProgressState) StopInput() {
+	if ps.supportsANSI {
+		close(ps.stopSpinner)
+	}
+
 	if !ps.paginationMode {
 		return
 	}

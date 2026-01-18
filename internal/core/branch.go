@@ -252,7 +252,7 @@ func executeCommandInRepos(root, command string, workers int, cfg *Config) {
 		os.Exit(1)
 	}
 
-	progress := NewProgressState(repos, fmt.Sprintf("Executing 'git %s'", command))
+	progress := NewProgressState(repos, fmt.Sprintf("Executing 'git %s'", command), cfg.PageSize)
 	progress.render()
 	progress.StartInput()
 	defer progress.StopInput()
@@ -393,7 +393,7 @@ func executeShellInRepos(root, command string, workers int, cfg *Config) {
 		os.Exit(1)
 	}
 
-	progress := NewProgressState(repos, fmt.Sprintf("Executing '%s'", command))
+	progress := NewProgressState(repos, fmt.Sprintf("Executing '%s'", command), cfg.PageSize)
 	progress.render()
 	progress.StartInput()
 	defer progress.StopInput()

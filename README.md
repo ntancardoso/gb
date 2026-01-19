@@ -1,35 +1,25 @@
-# Git Branch Switcher (gb)
+# Git Blitz (gb)
 
-A specialized CLI tool for maintaining consistent branch versions across multiple Git repositories, designed primarily for Odoo projects and OCA modules.
+A fast CLI tool for executing git and shell commands across multiple repositories simultaneously.
 
-## Primary Use Case
+## Use Cases
 
-**Odoo Version Synchronization**  
-Designed specifically for Odoo developers to:
-- Maintain identical versions across core Odoo and all OCA modules
-- Switch all related projects to the same version branch (e.g., 15.0, 16.0, 17.0)
-- Manage branches in complex Odoo project structures like:
-```
-/odoo-projects/
-├── odoo/                 # Core Odoo
-├── design-themes/        # Themes
-├── OCA/
-│   ├── project/          # OCA project module
-│   ├── survey/           # OCA survey module
-│   └── ...               # Other OCA modules
-└── custom/               # Custom modules
-```
+- **Multi-Repo Command Execution** - Run any git or shell command across all repositories at once
+- **Branch Synchronization** - Switch all repos to the same branch in parallel
+- **Status Overview** - List current branches across all repositories
+- **Version Management** - Keep related projects (like Odoo/OCA modules) in sync
 
 ## Features
 
+- **Git Command Execution**: Execute any git command across all repositories
+- **Shell Command Execution**: Execute any shell command across all repositories
+- **Bulk Branch Switching**: Switch all repos to a target branch with smart fallbacks
+- **Branch Listing**: View current branches across all repositories
 - **Recursive Discovery**: Automatically finds all Git repositories in subdirectories
-- **Concurrent Processing**: Uses configurable worker pools for fast branch switching
-- **Smart Branch Detection**: Handles local branches, remote tracking, and shallow repositories
+- **Concurrent Processing**: Uses configurable worker pools for fast execution
 - **Flexible Filtering**: Skip or include specific directories with customizable rules
-- **Branch Listing**: View all current branches across repositories
-- **Git Command Execution**: Execute arbitrary git commands across all repositories
-- **Shell Command Execution**: Execute arbitrary shell commands across all repositories
-- **Detailed Reporting**: Shows progress and summarizes results
+- **Progress Display**: Real-time updates with pagination for large repo sets
+- **Log Capture**: Stores detailed logs for each repository operation
 - **Cross-Platform**: Works on Windows, Linux, and macOS with symlink/junction support
 
 ## Installation
@@ -74,19 +64,6 @@ sudo mv gb /usr/local/bin/
 gb [options] <branch_name>
 ```
 
-**Switch all repositories to a branch:**
-```bash
-gb 15.0
-gb main
-gb feature-branch
-```
-
-**List all current branches:**
-```bash
-gb -l              # Short form
-gb --list          # Long form
-```
-
 **Execute a git command in all repositories:**
 ```bash
 gb -c "status"           # Short form
@@ -100,6 +77,19 @@ gb -sh "ls -la"          # Short form (Unix/Linux/macOS)
 gb -sh "dir"             # Short form (Windows)
 gb --shell "mkdir tmp"   # Long form
 gb -sh "pwd"             # Print working directory
+```
+
+**Switch all repositories to a branch:**
+```bash
+gb 15.0
+gb main
+gb feature-branch
+```
+
+**List all current branches:**
+```bash
+gb -l              # Short form
+gb --list          # Long form
 ```
 
 **Get help:**
@@ -118,28 +108,24 @@ gb --version       # Long form
 
 ```bash
 # Use more workers for faster processing
-gb -w 50 15.0              # Short form
-gb --workers 50 15.0       # Long form
+gb -w 50 -c "status"           # Short form
+gb --workers 50 -c "status"    # Long form
+
+# Custom page size for progress display
+gb -ps 10 -c "status"          # Show 10 repos per page
+gb --size 30 -c "status"       # Show 30 repos per page
 
 # Skip additional directories
-gb -s "build,dist,temp" 15.0        # Short form
-gb --skipDirs "build,dist,temp" 15.0  # Long form
+gb -s "build,dist,temp" -c "status"        # Short form
+gb --skipDirs "build,dist,temp" -c "status"  # Long form
 
 # Include normally skipped directories
 gb -i "vendor,node_modules" -l           # Short form
 gb --includeDirs "vendor,node_modules" --list  # Long form
 
 # Combine options (mix short and long forms)
-gb -w 10 --includeDirs "custom-vendor" 16.0
-gb --workers 10 -i "custom-vendor" 16.0
-
-# Execute git command with custom workers count
-gb -c "status" -w 30
-gb --cmd "status" --workers 30
-
-# Execute shell command with custom workers count
-gb -sh "ls -la" -w 30
-gb --shell "ls -la" --workers 30
+gb -w 10 --includeDirs "custom-vendor" -c "fetch"
+gb --workers 10 -i "custom-vendor" main
 ```
 
 ### Full Command Reference
@@ -154,60 +140,31 @@ Options:
   -c, --cmd string        Execute a git command in all repositories
   -sh, --shell string     Execute a shell command in all repositories
   -w, --workers int       Number of concurrent workers (default 20)
+  -ps, --size int         Number of repos to display per page (default 20)
   -s, --skipDirs string   Comma-separated list of directories to skip
   -i, --includeDirs string
                           Comma-separated list of directories to include
 
 Examples:
-  gb main                      Switch all repos to main branch
-  gb -l                        List all current branches
-  gb --list                    List all current branches
-  gb -w 50 -l                  Fast branch listing with 50 workers
-  gb --workers 5 main          Switch with 5 concurrent workers
-  gb -i "vendor,dist" 15.0     Include normally skipped directories
   gb -c "status"               Execute 'git status' in all repositories
   gb --cmd "fetch origin"      Execute 'git fetch origin' in all repositories
   gb -sh "ls -la"              Execute 'ls -la' shell command in all repositories
   gb --shell "mkdir tmp"       Execute 'mkdir tmp' shell command in all repositories
+  gb main                      Switch all repos to main branch
+  gb -l                        List all current branches
+  gb -w 50 -l                  Fast branch listing with 50 workers
+  gb --workers 5 main          Switch with 5 concurrent workers
+  gb -i "vendor,dist" 15.0     Include normally skipped directories
 ```
 
-## Typical Odoo Workflow
+## How It Works
 
-1. **Navigate to your Odoo projects folder:**
-```bash
-cd ~/odoo-projects
-```
-
-2. **Check current branch status:**
-```bash
-gb -l
-# or
-gb --list
-```
-
-3. **Synchronize all repositories to version 15.0:**
-```bash
-gb 15.0
-```
-
-4. **Switch to development branch with progress monitoring:**
-```bash
-gb -w 10 development
-# or
-gb --workers 10 development
-```
-
-5. **Execute git commands across all repositories:**
-```bash
-gb -c "status"
-gb --cmd "fetch origin"
-```
-
-6. **Execute shell commands across all repositories:**
-```bash
-gb -sh "ls -la"
-gb --shell "mkdir tmp"
-```
+1. **Discovery**: Recursively scans directories for Git repositories
+2. **Filtering**: Applies include/exclude rules to select target repos
+3. **Parallel Execution**: Uses worker pools to process multiple repositories simultaneously
+4. **Progress Display**: Shows real-time updates with pagination for large sets
+5. **Log Capture**: Stores detailed logs for each repository operation
+6. **Summary**: Displays success/failure counts with option to review logs
 
 ## Git Commands vs Shell Commands
 
@@ -222,19 +179,7 @@ gb --shell "mkdir tmp"
 - Cross-platform support (automatically uses `sh -c` on Unix/Linux/macOS and `cmd /c` on Windows)
 - Example: `gb -sh "ls -la"` lists files in each repo directory
 - Example: `gb -sh "mkdir tmp"` creates a `tmp` directory in each repo
-- Example: `gb -sh "pwd"` prints the working directory of each repo
 - Use this for file operations, directory management, or any non-git shell command
-
-## How It Works
-
-1. **Discovery Phase**: Recursively scans directories for Git repositories
-2. **Branch Analysis**: Checks if target branch exists locally or remotely
-3. **Concurrent Switching**: Uses worker pools to process multiple repositories simultaneously
-4. **Smart Fallbacks**: Automatically handles:
-   - Creating tracking branches from remote
-   - Fetching missing branches (with shallow repository support)
-   - Branch creation and checkout operations
-5. **Progress Reporting**: Real-time updates and final summary
 
 ## Default Skip Directories
 
@@ -247,14 +192,53 @@ By default, gb skips these directories to improve performance:
 
 Use `-i` / `--includeDirs` to include specific directories or `-s` / `--skipDirs` to override the defaults.
 
+## Example: Odoo Development Workflow
+
+For Odoo developers managing multiple OCA modules:
+
+```
+/odoo-projects/
+├── odoo/                 # Core Odoo
+├── design-themes/        # Themes
+├── OCA/
+│   ├── project/          # OCA project module
+│   ├── survey/           # OCA survey module
+│   └── ...               # Other OCA modules
+└── custom/               # Custom modules
+```
+
+1. **Navigate to your Odoo projects folder:**
+```bash
+cd ~/odoo-projects
+```
+
+2. **Check current branch status:**
+```bash
+gb -l
+```
+
+3. **Synchronize all repositories to version 15.0:**
+```bash
+gb 15.0
+```
+
+4. **Fetch updates from all remotes:**
+```bash
+gb -c "fetch origin"
+```
+
+5. **Check status across all repos:**
+```bash
+gb -c "status"
+```
+
 ## Error Handling
 
 - **Branch not found**: Reports repositories where the target branch doesn't exist
 - **Switch failures**: Shows detailed error messages for failed operations
 - **Permission issues**: Handles repository access problems gracefully
 - **Network issues**: Manages remote fetch failures appropriately
-- **Command execution failures**: Shows detailed error messages for failed git commands
-- **Shell command failures**: Shows detailed error messages for failed shell commands
+- **Command execution failures**: Shows detailed error messages with log review option
 
 ## Requirements
 
@@ -271,7 +255,7 @@ Use `-i` / `--includeDirs` to include specific directories or `-s` / `--skipDirs
 ## Contributing
 
 1. Fork the repository
-2. Create your feature branch (`gb feature-branch`)
+2. Create your feature branch (`git checkout -b feature-branch`)
 3. Run tests: `go test ./...`
 4. Commit your changes
 5. Push to the branch

@@ -29,6 +29,7 @@ type ProgressState struct {
 	repos             []RepoInfo
 	statuses          []repoStatus
 	mu                sync.Mutex
+	writeMu           sync.Mutex
 	totalRepos        int
 	maxDisplayedRepos int
 	writer            io.Writer
@@ -66,7 +67,20 @@ func NewProgressState(repos []RepoInfo, operationName string, pageSize int) *Pro
 }
 
 func supportsANSI() bool {
-	return os.Getenv("TERM") != "dumb"
+	fileInfo, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	if (fileInfo.Mode() & os.ModeCharDevice) == 0 {
+		return false
+	}
+
+	term := os.Getenv("TERM")
+	if term == "dumb" {
+		return false
+	}
+
+	return true
 }
 
 func (ps *ProgressState) UpdateStatus(relPath, status, errorMsg string) {
@@ -118,6 +132,7 @@ func (ps *ProgressState) renderANSI() {
 	var buf strings.Builder
 
 	if ps.linesDrawn > 0 {
+		buf.WriteString("\r")
 		fmt.Fprintf(&buf, "\033[%dA", ps.linesDrawn)
 		buf.WriteString("\033[J")
 	}
@@ -139,10 +154,11 @@ func (ps *ProgressState) renderANSI() {
 		endIdx = min(ps.maxDisplayedRepos, len(ps.repos))
 	}
 
+	numWidth := len(fmt.Sprintf("%d", len(ps.repos)))
 	for i := startIdx; i < endIdx; i++ {
 		icon := ps.getStatusIcon(ps.statuses[i].state)
 		statusText := ps.formatStatus(ps.statuses[i])
-		fmt.Fprintf(&buf, "[%d] %s %s - %s\n", i+1, icon, ps.repos[i].RelPath, statusText)
+		fmt.Fprintf(&buf, "[%0*d] %s %s - %s\n", numWidth, i+1, icon, ps.repos[i].RelPath, statusText)
 	}
 
 	if ps.paginationMode {
@@ -165,13 +181,17 @@ func (ps *ProgressState) renderANSI() {
 
 	ps.linesDrawn = lineCount
 
+	ps.writeMu.Lock()
 	_, _ = ps.writer.Write([]byte(buf.String()))
+	ps.writeMu.Unlock()
 }
 
 func (ps *ProgressState) renderSimple() {
 	waiting, processing, completed, failed := ps.countStatuses()
+	ps.writeMu.Lock()
 	_, _ = fmt.Fprintf(ps.writer, "Progress: %d waiting, %d processing, %d done, %d failed (%d/%d)\n",
 		waiting, processing, completed, failed, completed+failed, ps.totalRepos)
+	ps.writeMu.Unlock()
 }
 
 func (ps *ProgressState) RenderFinal() {
@@ -262,6 +282,9 @@ func (ps *ProgressState) StartInput() {
 
 	if err := keyboard.Open(); err != nil {
 		ps.paginationMode = false
+		if len(ps.repos) > ps.maxDisplayedRepos {
+			fmt.Fprintf(os.Stderr, "Note: Keyboard input unavailable, showing first %d repos. Use -ps flag to adjust display size.\n", ps.maxDisplayedRepos)
+		}
 		return
 	}
 

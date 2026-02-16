@@ -76,11 +76,7 @@ func supportsANSI() bool {
 	}
 
 	term := os.Getenv("TERM")
-	if term == "dumb" {
-		return false
-	}
-
-	return true
+	return term != "dumb"
 }
 
 func (ps *ProgressState) UpdateStatus(relPath, status, errorMsg string) {

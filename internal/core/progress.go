@@ -30,6 +30,7 @@ type ProgressState struct {
 	statuses          []repoStatus
 	mu                sync.Mutex
 	writeMu           sync.Mutex
+	stopOnce          sync.Once
 	totalRepos        int
 	maxDisplayedRepos int
 	writer            io.Writer
@@ -308,16 +309,18 @@ func (ps *ProgressState) runSpinner() {
 }
 
 func (ps *ProgressState) StopInput() {
-	if ps.supportsANSI {
-		close(ps.stopSpinner)
-	}
+	ps.stopOnce.Do(func() {
+		if ps.supportsANSI {
+			close(ps.stopSpinner)
+		}
 
-	if !ps.paginationMode {
-		return
-	}
+		if !ps.paginationMode {
+			return
+		}
 
-	close(ps.stopInput)
-	_ = keyboard.Close()
+		close(ps.stopInput)
+		_ = keyboard.Close()
+	})
 }
 
 func (ps *ProgressState) handleInput() {

@@ -255,7 +255,6 @@ func executeCommandInRepos(root, command string, workers int, cfg *Config) {
 	progress := NewProgressState(repos, fmt.Sprintf("Executing 'git %s'", command), cfg.PageSize)
 	progress.render()
 	progress.StartInput()
-	defer progress.StopInput()
 
 	repoCh := make(chan RepoInfo, len(repos))
 	resCh := make(chan CommandResult, len(repos))
@@ -344,6 +343,7 @@ func executeCommandInRepos(root, command string, workers int, cfg *Config) {
 	}
 
 	progress.RenderFinal()
+	progress.StopInput()
 
 	fmt.Printf("\n--- Summary ---\n")
 	fmt.Printf("Executed 'git %s' in %d repos: %d succeeded, %d failed\n",
@@ -396,7 +396,6 @@ func executeShellInRepos(root, command string, workers int, cfg *Config) {
 	progress := NewProgressState(repos, fmt.Sprintf("Executing '%s'", command), cfg.PageSize)
 	progress.render()
 	progress.StartInput()
-	defer progress.StopInput()
 
 	repoCh := make(chan RepoInfo, len(repos))
 	resCh := make(chan CommandResult, len(repos))
@@ -492,6 +491,7 @@ func executeShellInRepos(root, command string, workers int, cfg *Config) {
 	}
 
 	progress.RenderFinal()
+	progress.StopInput()
 
 	fmt.Printf("\n--- Summary ---\n")
 	fmt.Printf("Executed '%s' in %d repos: %d succeeded, %d failed\n",

@@ -162,6 +162,15 @@ func Run(args []string) error {
 	showVersion := fs.Bool("version", false, "Show version information")
 	fs.BoolVar(showVersion, "v", false, "Show version (shorthand)")
 
+	resetSoft := fs.String("reset-soft", "", "Soft reset all repos to origin/<branch>")
+	fs.StringVar(resetSoft, "rs", "", "Soft reset to origin/<branch> (shorthand)")
+
+	resetHard := fs.String("reset-hard", "", "Hard reset all repos to origin/<branch> (destructive, confirms first)")
+	fs.StringVar(resetHard, "rh", "", "Hard reset to origin/<branch> (shorthand)")
+
+	rebaseBranch := fs.String("rebase", "", "Rebase all repos onto origin/<branch> (confirms first)")
+	fs.StringVar(rebaseBranch, "rb", "", "Rebase onto origin/<branch> (shorthand)")
+
 	fs.Usage = func() {
 		_, _ = fmt.Fprintf(fs.Output(), "Usage: gb [options] <branch_name>\n\n")
 		fmt.Println("Options:")
@@ -175,6 +184,9 @@ func Run(args []string) error {
 		fmt.Println("  -s, --skipDirs string   Comma-separated list of directories to exclude from execution")
 		fmt.Println("  -i, --includeDirs string")
 		fmt.Println("                          Comma-separated list of directories to include in execution")
+		fmt.Println("  -rs, --reset-soft string  Soft reset all repos to origin/<branch>")
+		fmt.Println("  -rh, --reset-hard string  Hard reset all repos to origin/<branch> (destructive, confirms first)")
+		fmt.Println("  -rb, --rebase string      Rebase all repos onto origin/<branch> (confirms first)")
 		fmt.Println("\nExamples:")
 		fmt.Println("  gb main                      Switch all repos to main branch")
 		fmt.Println("  gb -l                        List all current branches")
@@ -189,6 +201,9 @@ func Run(args []string) error {
 		fmt.Println("  gb -sh \"ls -la\"              Execute 'ls -la' shell command in all repositories")
 		fmt.Println("  gb -sh \"pwd\" -i \"vendor\"     Execute 'pwd' only in vendor directory")
 		fmt.Println("  gb --shell \"mkdir tmp\"      Execute 'mkdir tmp' shell command in all repositories")
+		fmt.Println("  gb -rs main              Soft reset all repos to origin/main")
+		fmt.Println("  gb -rh feature/xyz       Hard reset all repos to origin/feature/xyz (with confirmation)")
+		fmt.Println("  gb -rb develop           Rebase all repos onto origin/develop (with confirmation)")
 	}
 
 	if err := fs.Parse(args); err != nil {
@@ -223,6 +238,21 @@ func Run(args []string) error {
 
 	if *listBranches {
 		listAllBranches(root, *workers, cfg)
+		return nil
+	}
+
+	if *resetSoft != "" {
+		syncBranch(root, *resetSoft, "soft", *workers, cfg)
+		return nil
+	}
+
+	if *resetHard != "" {
+		syncBranch(root, *resetHard, "hard", *workers, cfg)
+		return nil
+	}
+
+	if *rebaseBranch != "" {
+		syncBranch(root, *rebaseBranch, "rebase", *workers, cfg)
 		return nil
 	}
 

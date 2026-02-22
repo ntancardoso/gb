@@ -6,6 +6,7 @@ A fast CLI tool for executing git and shell commands across multiple repositorie
 
 - **Multi-Repo Command Execution** - Run any git or shell command across all repositories at once
 - **Branch Synchronization** - Switch all repos to the same branch in parallel
+- **Origin Sync** - Reset or rebase all repos to match `origin/<branch>`, like a bulk "sync branch" button
 - **Status Overview** - List current branches across all repositories
 - **Version Management** - Keep related projects (like Odoo/OCA modules) in sync
 
@@ -14,6 +15,9 @@ A fast CLI tool for executing git and shell commands across multiple repositorie
 - **Git Command Execution**: Execute any git command across all repositories
 - **Shell Command Execution**: Execute any shell command across all repositories
 - **Bulk Branch Switching**: Switch all repos to a target branch with smart fallbacks
+- **Origin Sync (soft reset)**: Move all repos' HEAD to `origin/<branch>` without touching working tree
+- **Origin Sync (hard reset)**: Discard local changes and reset all repos to `origin/<branch>`
+- **Origin Sync (rebase)**: Rebase all repos onto `origin/<branch>` with automatic conflict abort
 - **Branch Listing**: View current branches across all repositories
 - **Recursive Discovery**: Automatically finds all Git repositories in subdirectories
 - **Concurrent Processing**: Uses configurable worker pools for fast execution
@@ -104,6 +108,44 @@ gb -v              # Short form
 gb --version       # Long form
 ```
 
+### Sync from Origin
+
+Sync all repos to match a branch on `origin` — similar to Bitbucket's "Sync branch" button but across your entire workspace at once.
+
+All three modes share the same pre-checks: repos are auto-switched to the target branch first (fetching from origin if needed). Repos are **skipped** (not failed) when the branch doesn't exist on origin, there is no origin remote, HEAD is detached, or the repo is already up to date.
+
+**Soft reset** — move HEAD to `origin/<branch>`, keep working tree and index intact:
+```bash
+gb -rs main              # Short form
+gb --reset-soft main     # Long form
+gb -rs feature/xyz       # Works with any branch name
+```
+Safe for CI/non-interactive use. If a repo has staged changes before the reset, a warning is noted in the log output.
+
+**Hard reset** — discard all local changes and reset to `origin/<branch>`:
+```bash
+gb -rh main              # Short form
+gb --reset-hard main     # Long form
+```
+> **Destructive.** Requires an interactive terminal. Before executing, gb scans all repos for dirty state and shows a confirmation prompt listing any repos whose changes will be discarded. Repos that are mid-merge, mid-cherry-pick, or mid-revert are automatically skipped.
+
+**Rebase** — rebase local commits onto `origin/<branch>`:
+```bash
+gb -rb develop           # Short form
+gb --rebase develop      # Long form
+```
+> **Requires interactive terminal.** If a conflict occurs in any repo, `git rebase --abort` is run automatically to restore a clean state; the repo is reported as failed.
+
+**CI / non-interactive use:**
+```bash
+# Safe in CI — soft reset does not require a terminal
+gb -rs main
+
+# These will exit with an error if stdin is not a TTY:
+# gb -rh main
+# gb -rb main
+```
+
 ### Advanced Options
 
 ```bash
@@ -144,6 +186,9 @@ Options:
   -s, --skipDirs string   Comma-separated list of directories to skip
   -i, --includeDirs string
                           Comma-separated list of directories to include
+  -rs, --reset-soft string  Soft reset all repos to origin/<branch>
+  -rh, --reset-hard string  Hard reset all repos to origin/<branch> (destructive, confirms first)
+  -rb, --rebase string      Rebase all repos onto origin/<branch> (confirms first)
 
 Examples:
   gb -c "status"               Execute 'git status' in all repositories
@@ -155,6 +200,9 @@ Examples:
   gb -w 50 -l                  Fast branch listing with 50 workers
   gb --workers 5 main          Switch with 5 concurrent workers
   gb -i "vendor,dist" 15.0     Include normally skipped directories
+  gb -rs main                  Soft reset all repos to origin/main
+  gb -rh feature/xyz           Hard reset all repos to origin/feature/xyz (with confirmation)
+  gb -rb develop               Rebase all repos onto origin/develop (with confirmation)
 ```
 
 ## How It Works
@@ -227,7 +275,16 @@ gb 15.0
 gb -c "fetch origin"
 ```
 
-5. **Check status across all repos:**
+5. **Sync all repos to match origin/15.0 (discard local changes):**
+```bash
+gb -rh 15.0
+```
+Or keep local changes staged instead:
+```bash
+gb -rs 15.0
+```
+
+6. **Check status across all repos:**
 ```bash
 gb -c "status"
 ```
@@ -239,6 +296,12 @@ gb -c "status"
 - **Permission issues**: Handles repository access problems gracefully
 - **Network issues**: Manages remote fetch failures appropriately
 - **Command execution failures**: Shows detailed error messages with log review option
+- **Sync: branch not on origin**: Repo is skipped (not failed); counted separately in summary
+- **Sync: dirty state warning (soft reset)**: Repos with staged changes before a soft reset log a warning in the output; the reset still proceeds
+- **Sync: hard reset with local changes**: Pre-flight scan lists all affected repos before the confirmation prompt; user can abort cleanly
+- **Sync: rebase conflict**: `git rebase --abort` is run automatically; repo is reported as failed with clean state restored
+- **Sync: non-interactive terminal**: `-rh` and `-rb` exit with an error if stdin is not a TTY; use `-rs` for CI pipelines
+- **Sync: mid-operation repo**: Repos in the middle of a merge, cherry-pick, or revert are skipped by hard reset to avoid silent data loss
 
 ## Requirements
 

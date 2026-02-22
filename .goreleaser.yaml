@@ -33,6 +33,7 @@ release:
   github:
     owner: ntancardoso
     name: gb
+  prerelease: auto
 
 dist: bin/release
 

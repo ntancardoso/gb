@@ -651,21 +651,18 @@ func TestProcessSingleResetFetchWhenAlreadyOnBranch(t *testing.T) {
 func TestSyncBranchSoft(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	repoDir, _ := makeRepoAheadOfOrigin(t)
-	// put repoDir inside tmpDir so findGitRepos finds it
-	linkedDir := filepath.Join(tmpDir, "repo1")
-	if err := os.Symlink(repoDir, linkedDir); err != nil {
-		// Symlinks may not work on all CI — copy instead
-		if err2 := os.MkdirAll(linkedDir, 0755); err2 != nil {
-			t.Fatal(err2)
-		}
-		// Fall back: create a fresh repo directly inside tmpDir
-		repoDir2, _ := makeRepoAheadOfOrigin(t)
-		linkedDir = repoDir2
-		tmpDir = filepath.Dir(repoDir2)
-	}
+	remote := t.TempDir()
+	repoDir := filepath.Join(tmpDir, "repo1")
+	runCmd(t, remote, "git", "init", "--bare", "-b", "main")
+	createGitRepo(t, repoDir)
+	runCmd(t, repoDir, "git", "remote", "add", "origin", remote)
+	runCmd(t, repoDir, "git", "push", "origin", "main")
+	runCmd(t, repoDir, "git", "fetch", "origin")
+	writeFile(t, repoDir, "local.txt", "local content")
+	runCmd(t, repoDir, "git", "add", ".")
+	runCmd(t, repoDir, "git", "commit", "-m", "local commit ahead of origin")
 
-	// Redirect stdout to suppress output
+	// Redirect stdout to capture output
 	oldStdout := os.Stdout
 	r, w, _ := os.Pipe()
 	os.Stdout = w
@@ -676,10 +673,8 @@ func TestSyncBranchSoft(t *testing.T) {
 	_ = w.Close()
 	os.Stdout = oldStdout
 
-	buf := make([]byte, 4096)
-	n, _ := r.Read(buf)
-	output := string(buf[:n])
-	_ = linkedDir
+	outBytes, _ := io.ReadAll(r)
+	output := string(outBytes)
 
 	if !strings.Contains(output, "Summary") {
 		t.Errorf("expected summary in output, got: %s", output)

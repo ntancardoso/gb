@@ -61,8 +61,8 @@ func syncBranch(root, branch, mode string, workers int, cfg *Config) {
 	}
 
 	opDesc := operationDescription(mode, branch)
-	fmt.Printf("Found %d repos (filtered from %d discovered), running '%s' with %d workers...\n",
-		len(repos), len(allRepos), opDesc, workers)
+	fmt.Println(StyleInfo.Render(fmt.Sprintf("Found %d repos (filtered from %d discovered), running '%s' with %d workers...",
+		len(repos), len(allRepos), opDesc, workers)))
 
 	logManager, err := NewLogManager()
 	if err != nil {
@@ -142,10 +142,10 @@ func syncBranch(root, branch, mode string, workers int, cfg *Config) {
 	progress.RenderFinal()
 	progress.StopInput()
 
-	fmt.Printf("\n--- Summary ---\n")
+	fmt.Println("\n" + StyleBold.Render("--- Summary ---"))
 	fmt.Printf("Ran '%s' across %d repos:\n", opDesc, len(repos))
-	fmt.Printf("  %d succeeded\n", succeeded)
-	fmt.Printf("  %d failed\n", failed)
+	fmt.Printf("  %s succeeded\n", StyleSuccess.Render(fmt.Sprintf("%d", succeeded)))
+	fmt.Printf("  %s failed\n", StyleFailed.Render(fmt.Sprintf("%d", failed)))
 	if skipped > 0 {
 		// Sort for deterministic output.
 		reasons := make([]string, 0, len(skipReasons))
@@ -157,7 +157,7 @@ func syncBranch(root, branch, mode string, workers int, cfg *Config) {
 		for _, reason := range reasons {
 			parts = append(parts, fmt.Sprintf("%s: %d", reason, skipReasons[reason]))
 		}
-		fmt.Printf("  %d skipped (%s)\n", skipped, strings.Join(parts, ", "))
+		fmt.Printf("  %s skipped (%s)\n", StyleSkipped.Render(fmt.Sprintf("%d", skipped)), strings.Join(parts, ", "))
 	}
 
 	if PromptViewLogs() {

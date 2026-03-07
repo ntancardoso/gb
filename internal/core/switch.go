@@ -31,7 +31,7 @@ func switchBranches(root, target string, workers int, cfg *Config) {
 		return
 	}
 
-	fmt.Printf("Found %d repos (filtered from %d discovered), switching to %s with %d workers...\n", len(repos), len(allRepos), target, workers)
+	fmt.Println(StyleInfo.Render(fmt.Sprintf("Found %d repos (filtered from %d discovered), switching to %s with %d workers...", len(repos), len(allRepos), target, workers)))
 
 	logManager, err := NewLogManager()
 	if err != nil {
@@ -103,8 +103,11 @@ func switchBranches(root, target string, workers int, cfg *Config) {
 	progress.RenderFinal()
 	progress.StopInput()
 
-	fmt.Printf("\n--- Summary ---\n")
-	fmt.Printf("Switched %d repos to %s, %d failed\n", ok, target, fail)
+	fmt.Println("\n" + StyleBold.Render("--- Summary ---"))
+	fmt.Printf("Switched %s repos to %s, %s failed\n",
+		StyleSuccess.Render(fmt.Sprintf("%d", ok)),
+		target,
+		StyleFailed.Render(fmt.Sprintf("%d", fail)))
 
 	if PromptViewLogs() {
 		DisplaySwitchLogs(logManager, results)

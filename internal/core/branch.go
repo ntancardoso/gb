@@ -166,7 +166,7 @@ func listAllBranches(root string, workers int, cfg *Config) {
 		return
 	}
 
-	fmt.Printf("Listing branches in %d repos (filtered from %d discovered)...\n", len(repos), len(allRepos))
+	fmt.Println(StyleInfo.Render(fmt.Sprintf("Listing branches in %d repos (filtered from %d discovered)...", len(repos), len(allRepos))))
 
 	repoCh := make(chan RepoInfo, len(repos))
 	resCh := make(chan BranchResult, len(repos))
@@ -209,13 +209,13 @@ func listAllBranches(root string, workers int, cfg *Config) {
 	sort.Strings(branches)
 
 	for _, b := range branches {
-		fmt.Printf("Branch: %s\n", b)
-		fmt.Println("-----------------")
+		fmt.Printf("%s %s\n", StyleBold.Render("Branch:"), StyleSuccess.Render(b))
+		fmt.Println(StyleDim.Render("-----------------"))
 		sort.Strings(branchRepos[b])
 		for _, repo := range branchRepos[b] {
 			fmt.Println(repo)
 		}
-		fmt.Println("=================")
+		fmt.Println(StyleDim.Render("================="))
 	}
 }
 
@@ -243,8 +243,8 @@ func executeCommandInRepos(root, command string, workers int, cfg *Config) {
 		os.Exit(1)
 	}
 
-	fmt.Printf("Found %d repos (filtered from %d discovered), executing 'git %s' with %d workers...\n",
-		len(repos), len(allRepos), command, workers)
+	fmt.Println(StyleInfo.Render(fmt.Sprintf("Found %d repos (filtered from %d discovered), executing 'git %s' with %d workers...",
+		len(repos), len(allRepos), command, workers)))
 
 	logManager, err := NewLogManager()
 	if err != nil {
@@ -345,9 +345,11 @@ func executeCommandInRepos(root, command string, workers int, cfg *Config) {
 	progress.RenderFinal()
 	progress.StopInput()
 
-	fmt.Printf("\n--- Summary ---\n")
-	fmt.Printf("Executed 'git %s' in %d repos: %d succeeded, %d failed\n",
-		command, success+failed, success, failed)
+	fmt.Println("\n" + StyleBold.Render("--- Summary ---"))
+	fmt.Printf("Executed 'git %s' in %d repos: %s succeeded, %s failed\n",
+		command, success+failed,
+		StyleSuccess.Render(fmt.Sprintf("%d", success)),
+		StyleFailed.Render(fmt.Sprintf("%d", failed)))
 
 	if PromptViewLogs() {
 		DisplayLogs(logManager, results)
@@ -384,8 +386,8 @@ func executeShellInRepos(root, command string, workers int, cfg *Config) {
 		os.Exit(1)
 	}
 
-	fmt.Printf("Found %d repos (filtered from %d discovered), executing '%s' with %d workers...\n",
-		len(repos), len(allRepos), command, workers)
+	fmt.Println(StyleInfo.Render(fmt.Sprintf("Found %d repos (filtered from %d discovered), executing '%s' with %d workers...",
+		len(repos), len(allRepos), command, workers)))
 
 	logManager, err := NewLogManager()
 	if err != nil {
@@ -493,9 +495,11 @@ func executeShellInRepos(root, command string, workers int, cfg *Config) {
 	progress.RenderFinal()
 	progress.StopInput()
 
-	fmt.Printf("\n--- Summary ---\n")
-	fmt.Printf("Executed '%s' in %d repos: %d succeeded, %d failed\n",
-		command, success+failed, success, failed)
+	fmt.Println("\n" + StyleBold.Render("--- Summary ---"))
+	fmt.Printf("Executed '%s' in %d repos: %s succeeded, %s failed\n",
+		command, success+failed,
+		StyleSuccess.Render(fmt.Sprintf("%d", success)),
+		StyleFailed.Render(fmt.Sprintf("%d", failed)))
 
 	if PromptViewLogs() {
 		DisplayLogs(logManager, results)

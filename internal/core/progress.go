@@ -2,13 +2,15 @@ package core
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/eiannone/keyboard"
+	"github.com/charmbracelet/bubbles/progress"
+	"github.com/charmbracelet/bubbles/spinner"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 const (
@@ -18,341 +20,285 @@ const (
 	statusFailed     = "failed"
 )
 
-var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+type statusMsg struct{ relPath, state, message string }
+type doneMsg struct{}
+type tickMsg time.Time
 
 type repoStatus struct {
 	state   string
 	message string
 }
 
-type ProgressState struct {
-	repos             []RepoInfo
-	statuses          []repoStatus
-	mu                sync.Mutex
-	writeMu           sync.Mutex
-	stopOnce          sync.Once
-	totalRepos        int
-	maxDisplayedRepos int
-	writer            io.Writer
-	supportsANSI      bool
-	linesDrawn        int
-	operationName     string
-	currentPage       int
-	paginationMode    bool
-	stopInput         chan struct{}
-	stopSpinner       chan struct{}
-	spinnerIndex      int
+type model struct {
+	statuses  map[string]repoStatus
+	order     []string
+	spinner   spinner.Model
+	progBar   progress.Model
+	total     int
+	pageSize  int
+	page      int
+	width     int
+	startTime time.Time
+	done      bool
+	opName    string
 }
 
-func NewProgressState(repos []RepoInfo, operationName string, pageSize int) *ProgressState {
-	statuses := make([]repoStatus, len(repos))
-	for i := range statuses {
-		statuses[i] = repoStatus{state: statusWaiting}
+func newModel(repos []RepoInfo, opName string, pageSize int) model {
+	s := spinner.New()
+	s.Spinner = spinner.Dot
+
+	statuses := make(map[string]repoStatus, len(repos))
+	order := make([]string, 0, len(repos))
+	for _, r := range repos {
+		statuses[r.RelPath] = repoStatus{state: statusWaiting}
+		order = append(order, r.RelPath)
 	}
 
-	paginationMode := len(repos) > pageSize
+	p := progress.New(progress.WithDefaultGradient())
 
-	return &ProgressState{
-		repos:             repos,
-		statuses:          statuses,
-		totalRepos:        len(repos),
-		maxDisplayedRepos: pageSize,
-		writer:            os.Stdout,
-		supportsANSI:      supportsANSI(),
-		operationName:     operationName,
-		currentPage:       0,
-		paginationMode:    paginationMode,
-		stopInput:         make(chan struct{}),
-		stopSpinner:       make(chan struct{}),
+	return model{
+		statuses:  statuses,
+		order:     order,
+		spinner:   s,
+		progBar:   p,
+		total:     len(repos),
+		pageSize:  pageSize,
+		width:     80,
+		startTime: time.Now(),
+		opName:    opName,
 	}
 }
 
-func supportsANSI() bool {
-	fileInfo, err := os.Stdout.Stat()
-	if err != nil {
-		return false
-	}
-	if (fileInfo.Mode() & os.ModeCharDevice) == 0 {
-		return false
-	}
-
-	term := os.Getenv("TERM")
-	return term != "dumb"
+func tickEvery() tea.Cmd {
+	return tea.Every(time.Second, func(t time.Time) tea.Msg {
+		return tickMsg(t)
+	})
 }
 
-func (ps *ProgressState) UpdateStatus(relPath, status, errorMsg string) {
-	ps.mu.Lock()
-
-	repoIndex := ps.findRepoIndex(relPath)
-	if repoIndex == -1 {
-		ps.mu.Unlock()
-		return
-	}
-
-	switch status {
-	case statusProcessing:
-		ps.statuses[repoIndex] = repoStatus{state: statusProcessing}
-	case statusCompleted:
-		ps.statuses[repoIndex] = repoStatus{state: statusCompleted}
-	case statusFailed:
-		ps.statuses[repoIndex] = repoStatus{state: statusFailed, message: errorMsg}
-	}
-
-	ps.renderLocked()
-	ps.mu.Unlock()
+func (m model) Init() tea.Cmd {
+	return tea.Batch(m.spinner.Tick, tickEvery())
 }
 
-func (ps *ProgressState) findRepoIndex(relPath string) int {
-	for i, repo := range ps.repos {
-		if repo.RelPath == relPath {
-			return i
+func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case statusMsg:
+		m.statuses[msg.relPath] = repoStatus{state: msg.state, message: msg.message}
+		return m, nil
+
+	case doneMsg:
+		m.done = true
+		return m, tea.Quit
+
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "up", "pgup":
+			if m.page > 0 {
+				m.page--
+			}
+		case "down", "pgdown":
+			if m.page < m.totalPages()-1 {
+				m.page++
+			}
+		case "ctrl+c":
+			return m, tea.Quit
 		}
+		return m, nil
+
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.progBar.Width = msg.Width - 30
+		if m.progBar.Width < 20 {
+			m.progBar.Width = 20
+		}
+		return m, nil
+
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
+
+	case progress.FrameMsg:
+		updated, cmd := m.progBar.Update(msg)
+		m.progBar = updated.(progress.Model)
+		return m, cmd
+
+	case tickMsg:
+		return m, tickEvery()
 	}
-	return -1
+
+	return m, nil
 }
 
-func (ps *ProgressState) render() {
-	ps.mu.Lock()
-	defer ps.mu.Unlock()
-	ps.renderLocked()
-}
+func (m model) View() string {
+	if m.total == 0 {
+		return ""
+	}
 
-func (ps *ProgressState) renderLocked() {
-	if ps.supportsANSI {
-		ps.renderANSI()
+	var sb strings.Builder
+
+	elapsed := time.Since(m.startTime).Truncate(time.Second)
+	if m.done {
+		sb.WriteString(fmt.Sprintf("✓ %s - Done\n\n", m.opName))
 	} else {
-		ps.renderSimple()
+		sb.WriteString(fmt.Sprintf("%s %s  %s\n\n", m.spinner.View(), m.opName, elapsed))
+	}
+
+	completed, failed, processing, waiting := m.countStatuses()
+	pct := float64(completed+failed) / float64(m.total)
+
+	sb.WriteString("  ")
+	sb.WriteString(m.progBar.ViewAs(pct))
+	sb.WriteString(fmt.Sprintf("  %d/%d  ✅ %d  ❌ %d  🔄 %d  ⏳ %d\n\n",
+		completed+failed, m.total, completed, failed, processing, waiting))
+
+	for _, relPath := range m.sortedPage() {
+		sb.WriteString("  ")
+		sb.WriteString(m.formatRepoLine(relPath, m.statuses[relPath]))
+		sb.WriteString("\n")
+	}
+
+	if m.totalPages() > 1 {
+		sb.WriteString(fmt.Sprintf("\n  Page %d/%d  ↑↓ PgUp/PgDn\n", m.page+1, m.totalPages()))
+	}
+
+	return sb.String()
+}
+
+func (m model) formatRepoLine(relPath string, st repoStatus) string {
+	switch st.state {
+	case statusFailed:
+		errSuffix := ""
+		if st.message != "" {
+			msg := strings.ReplaceAll(st.message, "\n", " ")
+			msg = strings.TrimSpace(msg)
+			runes := []rune(msg)
+			if len(runes) > 60 {
+				msg = string(runes[:57]) + "..."
+			}
+			errSuffix = "  " + StyleErrInline.Render(msg)
+		}
+		return "❌ " + StyleFailed.Render(relPath) + errSuffix
+	case statusProcessing:
+		return "🔄 " + StyleProcessing.Render(relPath)
+	case statusWaiting:
+		return "⏳ " + StyleWaiting.Render(relPath)
+	case statusCompleted:
+		return "✅ " + StyleSuccess.Render(relPath)
+	default:
+		return "⏳ " + relPath
 	}
 }
 
-func (ps *ProgressState) renderANSI() {
-	var buf strings.Builder
-
-	if ps.linesDrawn > 0 {
-		buf.WriteString("\r")
-		fmt.Fprintf(&buf, "\033[%dA", ps.linesDrawn)
-		buf.WriteString("\033[J")
-	}
-
-	waiting, processing, completed, failed := ps.countStatuses()
-
-	if completed+failed < ps.totalRepos {
-		fmt.Fprintf(&buf, "%s %s...\n", spinnerFrames[ps.spinnerIndex], ps.operationName)
-	} else {
-		fmt.Fprintf(&buf, "✓ %s - Done\n", ps.operationName)
-	}
-
-	var startIdx, endIdx int
-	if ps.paginationMode {
-		startIdx = ps.currentPage * ps.maxDisplayedRepos
-		endIdx = min(startIdx+ps.maxDisplayedRepos, len(ps.repos))
-	} else {
-		startIdx = 0
-		endIdx = min(ps.maxDisplayedRepos, len(ps.repos))
-	}
-
-	numWidth := len(fmt.Sprintf("%d", len(ps.repos)))
-	for i := startIdx; i < endIdx; i++ {
-		icon := ps.getStatusIcon(ps.statuses[i].state)
-		statusText := ps.formatStatus(ps.statuses[i])
-		fmt.Fprintf(&buf, "[%0*d] %s %s - %s\n", numWidth, i+1, icon, ps.repos[i].RelPath, statusText)
-	}
-
-	if ps.paginationMode {
-		fmt.Fprintf(&buf, "Page %d/%d (↑/↓ PgUp/PgDn to navigate)\n", ps.currentPage+1, ps.totalPages())
-	} else if len(ps.repos) > ps.maxDisplayedRepos {
-		fmt.Fprintf(&buf, "... and %d more repos\n", len(ps.repos)-ps.maxDisplayedRepos)
-	}
-
-	fmt.Fprintf(&buf, "Status: %d waiting, %d processing, %d done, %d failed (%d/%d)\n",
-		waiting, processing, completed, failed, completed+failed, ps.totalRepos)
-
-	lineCount := 1
-	lineCount += endIdx - startIdx
-	if ps.paginationMode {
-		lineCount++
-	} else if len(ps.repos) > ps.maxDisplayedRepos {
-		lineCount++
-	}
-	lineCount++
-
-	ps.linesDrawn = lineCount
-
-	ps.writeMu.Lock()
-	_, _ = ps.writer.Write([]byte(buf.String()))
-	ps.writeMu.Unlock()
-}
-
-func (ps *ProgressState) renderSimple() {
-	waiting, processing, completed, failed := ps.countStatuses()
-	ps.writeMu.Lock()
-	_, _ = fmt.Fprintf(ps.writer, "Progress: %d waiting, %d processing, %d done, %d failed (%d/%d)\n",
-		waiting, processing, completed, failed, completed+failed, ps.totalRepos)
-	ps.writeMu.Unlock()
-}
-
-func (ps *ProgressState) RenderFinal() {
-}
-
-func (ps *ProgressState) countStatuses() (waiting, processing, completed, failed int) {
-	for _, status := range ps.statuses {
-		switch status.state {
-		case statusWaiting:
-			waiting++
-		case statusProcessing:
-			processing++
+func (m model) countStatuses() (completed, failed, processing, waiting int) {
+	for _, st := range m.statuses {
+		switch st.state {
 		case statusCompleted:
 			completed++
 		case statusFailed:
 			failed++
+		case statusProcessing:
+			processing++
+		case statusWaiting:
+			waiting++
 		}
 	}
 	return
 }
 
-func (ps *ProgressState) getStatusIcon(state string) string {
-	switch state {
-	case statusWaiting:
-		return "⏳"
-	case statusProcessing:
-		return "🔄"
-	case statusCompleted:
-		return "✅"
-	case statusFailed:
-		return "❌"
-	default:
-		return "⏳"
-	}
-}
-
-func (ps *ProgressState) formatStatus(status repoStatus) string {
-	switch status.state {
-	case statusWaiting:
-		return "waiting"
-	case statusProcessing:
-		return "processing..."
-	case statusCompleted:
-		return "completed"
-	case statusFailed:
-		if status.message != "" {
-			msg := strings.ReplaceAll(status.message, "\n", " ")
-			msg = strings.ReplaceAll(msg, "\r", "")
-			msg = strings.TrimSpace(msg)
-			if len(msg) > 80 {
-				msg = msg[:77] + "..."
-			}
-			return fmt.Sprintf("failed: %s", msg)
-		}
-		return "failed"
-	default:
-		return "unknown"
-	}
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func (ps *ProgressState) totalPages() int {
-	if !ps.paginationMode {
+func (m model) totalPages() int {
+	if m.pageSize <= 0 {
 		return 1
 	}
-	return (len(ps.repos) + ps.maxDisplayedRepos - 1) / ps.maxDisplayedRepos
+	return (len(m.order) + m.pageSize - 1) / m.pageSize
+}
+
+func (m model) sortedPage() []string {
+	start := m.page * m.pageSize
+	end := min(start+m.pageSize, len(m.order))
+	pageItems := m.order[start:end]
+
+	priority := map[string]int{
+		statusFailed:     0,
+		statusProcessing: 1,
+		statusWaiting:    2,
+		statusCompleted:  3,
+	}
+
+	sorted := make([]string, len(pageItems))
+	copy(sorted, pageItems)
+	for i := 1; i < len(sorted); i++ {
+		for j := i; j > 0 && priority[m.statuses[sorted[j]].state] < priority[m.statuses[sorted[j-1]].state]; j-- {
+			sorted[j], sorted[j-1] = sorted[j-1], sorted[j]
+		}
+	}
+	return sorted
+}
+
+type ProgressState struct {
+	program      *tea.Program
+	supportsANSI bool
+	stopped      atomic.Bool
+	wg           sync.WaitGroup
+	stopOnce     sync.Once
+}
+
+func NewProgressState(repos []RepoInfo, operationName string, pageSize int) *ProgressState {
+	ansi := supportsANSI()
+	ps := &ProgressState{supportsANSI: ansi}
+	if ansi {
+		m := newModel(repos, operationName, pageSize)
+		ps.program = tea.NewProgram(m)
+	}
+	return ps
+}
+
+func supportsANSI() bool {
+	if os.Getenv("NO_COLOR") != "" {
+		return false
+	}
+	fi, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	if (fi.Mode() & os.ModeCharDevice) == 0 {
+		return false
+	}
+	return os.Getenv("TERM") != "dumb"
 }
 
 func (ps *ProgressState) StartInput() {
-	if ps.supportsANSI {
-		go ps.runSpinner()
-	}
-
-	if !ps.paginationMode || !ps.supportsANSI {
+	if !ps.supportsANSI || ps.program == nil {
 		return
 	}
-
-	fileInfo, err := os.Stdin.Stat()
-	if err != nil || (fileInfo.Mode()&os.ModeCharDevice) == 0 {
-		return
-	}
-
-	if err := keyboard.Open(); err != nil {
-		ps.paginationMode = false
-		if len(ps.repos) > ps.maxDisplayedRepos {
-			fmt.Fprintf(os.Stderr, "Note: Keyboard input unavailable, showing first %d repos. Use -ps flag to adjust display size.\n", ps.maxDisplayedRepos)
+	ps.wg.Add(1)
+	go func() {
+		defer ps.wg.Done()
+		if _, err := ps.program.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "TUI error: %v\n", err)
 		}
-		return
-	}
-
-	go ps.handleInput()
-}
-
-func (ps *ProgressState) runSpinner() {
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ps.stopSpinner:
-			return
-		case <-ticker.C:
-			ps.mu.Lock()
-			_, _, completed, failed := ps.countStatuses()
-			if completed+failed < ps.totalRepos {
-				ps.spinnerIndex = (ps.spinnerIndex + 1) % len(spinnerFrames)
-				ps.renderLocked()
-			}
-			ps.mu.Unlock()
-		}
-	}
+	}()
 }
 
 func (ps *ProgressState) StopInput() {
 	ps.stopOnce.Do(func() {
-		if ps.supportsANSI {
-			close(ps.stopSpinner)
+		ps.stopped.Store(true)
+		if ps.program != nil {
+			ps.program.Send(doneMsg{})
 		}
-
-		if !ps.paginationMode {
-			return
-		}
-
-		close(ps.stopInput)
-		_ = keyboard.Close()
+		ps.wg.Wait()
 	})
 }
 
-func (ps *ProgressState) handleInput() {
-	for {
-		select {
-		case <-ps.stopInput:
-			return
-		default:
-			_, key, err := keyboard.GetKey()
-			if err != nil {
-				continue
-			}
-
-			ps.mu.Lock()
-			changed := false
-			switch key {
-			case keyboard.KeyArrowDown, keyboard.KeyPgdn:
-				if ps.currentPage < ps.totalPages()-1 {
-					ps.currentPage++
-					changed = true
-				}
-			case keyboard.KeyArrowUp, keyboard.KeyPgup:
-				if ps.currentPage > 0 {
-					ps.currentPage--
-					changed = true
-				}
-			}
-
-			if changed {
-				ps.renderLocked()
-			}
-			ps.mu.Unlock()
-		}
+func (ps *ProgressState) UpdateStatus(relPath, status, errorMsg string) {
+	if ps.stopped.Load() {
+		return
 	}
+	if ps.program != nil {
+		ps.program.Send(statusMsg{relPath: relPath, state: status, message: errorMsg})
+		return
+	}
+	fmt.Printf("%s: %s\n", relPath, status)
 }
+
+func (ps *ProgressState) render()      {}
+func (ps *ProgressState) RenderFinal() {}

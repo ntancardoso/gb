@@ -214,7 +214,7 @@ func Run(args []string) error {
 	}
 
 	if *showVersion {
-		fmt.Printf("gb version %s\n", version)
+		fmt.Println(StyleBold.Render(fmt.Sprintf("gb version %s", version)))
 		return nil
 	}
 

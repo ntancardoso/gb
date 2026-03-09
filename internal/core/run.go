@@ -24,16 +24,20 @@ var (
 )
 
 type Config struct {
-	skipSet    map[string]struct{}
-	includeSet map[string]struct{}
-	PageSize   int
+	skipSet          map[string]struct{}
+	includeSet       map[string]struct{}
+	skipBranchSet    map[string]struct{}
+	includeBranchSet map[string]struct{}
+	PageSize         int
 }
 
-func newConfig(skipDirs, includeDirs []string, pageSize int) *Config {
+func newConfig(skipDirs, includeDirs, skipBranches, includeBranches []string, pageSize int) *Config {
 	cfg := &Config{
-		skipSet:    make(map[string]struct{}),
-		includeSet: make(map[string]struct{}),
-		PageSize:   pageSize,
+		skipSet:          make(map[string]struct{}),
+		includeSet:       make(map[string]struct{}),
+		skipBranchSet:    make(map[string]struct{}),
+		includeBranchSet: make(map[string]struct{}),
+		PageSize:         pageSize,
 	}
 
 	for _, dir := range includeDirs {
@@ -46,7 +50,29 @@ func newConfig(skipDirs, includeDirs []string, pageSize int) *Config {
 		}
 	}
 
+	for _, b := range includeBranches {
+		cfg.includeBranchSet[b] = struct{}{}
+	}
+
+	for _, b := range skipBranches {
+		if _, included := cfg.includeBranchSet[b]; !included {
+			cfg.skipBranchSet[b] = struct{}{}
+		}
+	}
+
 	return cfg
+}
+
+func (cfg *Config) shouldExecuteInBranch(branch string) bool {
+	if len(cfg.includeBranchSet) > 0 {
+		_, ok := cfg.includeBranchSet[branch]
+		return ok
+	}
+	if len(cfg.skipBranchSet) > 0 {
+		_, ok := cfg.skipBranchSet[branch]
+		return !ok
+	}
+	return true
 }
 
 func (cfg *Config) shouldExecuteInRepo(relPath string) bool {
@@ -159,6 +185,12 @@ func Run(args []string) error {
 	pageSize := fs.Int("size", defaultPageSize, "Number of repos to display per page")
 	fs.IntVar(pageSize, "ps", defaultPageSize, "Repos per page (shorthand)")
 
+	skipBranchesFlag := fs.String("skipBranches", "", "Comma-separated branch names to exclude")
+	fs.StringVar(skipBranchesFlag, "sb", "", "Branch names to exclude (shorthand)")
+
+	includeBranchesFlag := fs.String("includeBranches", "", "Comma-separated branch names to include (only these)")
+	fs.StringVar(includeBranchesFlag, "ib", "", "Branch names to include (shorthand)")
+
 	showVersion := fs.Bool("version", false, "Show version information")
 	fs.BoolVar(showVersion, "v", false, "Show version (shorthand)")
 
@@ -187,6 +219,10 @@ func Run(args []string) error {
 		fmt.Println("  -rs, --reset-soft string  Soft reset all repos to origin/<branch>")
 		fmt.Println("  -rh, --reset-hard string  Hard reset all repos to origin/<branch> (destructive, confirms first)")
 		fmt.Println("  -rb, --rebase string      Rebase all repos onto origin/<branch> (confirms first)")
+		fmt.Println("  -ib, --includeBranches string")
+		fmt.Println("                            Only operate on repos currently on these branches (comma-separated)")
+		fmt.Println("  -sb, --skipBranches string")
+		fmt.Println("                            Skip repos currently on these branches (comma-separated)")
 		fmt.Println("\nExamples:")
 		fmt.Println("  gb main                      Switch all repos to main branch")
 		fmt.Println("  gb -l                        List all current branches")
@@ -204,6 +240,9 @@ func Run(args []string) error {
 		fmt.Println("  gb -rs main              Soft reset all repos to origin/main")
 		fmt.Println("  gb -rh feature/xyz       Hard reset all repos to origin/feature/xyz (with confirmation)")
 		fmt.Println("  gb -rb develop           Rebase all repos onto origin/develop (with confirmation)")
+		fmt.Println("  gb -ib main -l           List branches, only repos currently on main")
+		fmt.Println("  gb -sb main -c \"fetch origin\"  Fetch in all repos except those on main")
+		fmt.Println("  gb -ib develop -c \"status\"     Git status only in repos on develop")
 	}
 
 	if err := fs.Parse(args); err != nil {
@@ -220,8 +259,10 @@ func Run(args []string) error {
 
 	skipDirs := parseCommaSeparated(*skipDirsFlag, defaultSkipDirs)
 	includeDirs := parseCommaSeparated(*includeDirsFlag, nil)
+	skipBranches := parseCommaSeparated(*skipBranchesFlag, nil)
+	includeBranches := parseCommaSeparated(*includeBranchesFlag, nil)
 
-	cfg := newConfig(skipDirs, includeDirs, *pageSize)
+	cfg := newConfig(skipDirs, includeDirs, skipBranches, includeBranches, *pageSize)
 
 	root, _ := os.Getwd()
 	root = resolveRoot(root)

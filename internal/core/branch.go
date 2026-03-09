@@ -148,6 +148,45 @@ func getBranch(path string) (string, error) {
 	return branch, nil
 }
 
+func (cfg *Config) filterReposByBranch(repos []RepoInfo, workers int) []RepoInfo {
+	if len(cfg.includeBranchSet) == 0 && len(cfg.skipBranchSet) == 0 {
+		return repos
+	}
+
+	type result struct {
+		repo   RepoInfo
+		branch string
+	}
+
+	repoCh := make(chan RepoInfo, len(repos))
+	resCh := make(chan result, len(repos))
+
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for r := range repoCh {
+				branch, _ := getBranch(r.Path)
+				resCh <- result{repo: r, branch: branch}
+			}
+		}()
+	}
+	for _, r := range repos {
+		repoCh <- r
+	}
+	close(repoCh)
+	go func() { wg.Wait(); close(resCh) }()
+
+	var filtered []RepoInfo
+	for res := range resCh {
+		if cfg.shouldExecuteInBranch(res.branch) {
+			filtered = append(filtered, res.repo)
+		}
+	}
+	return filtered
+}
+
 func listAllBranches(root string, workers int, cfg *Config) {
 	fmt.Printf("Discovering repos in %s...\n", root)
 	allRepos, err := findGitRepos(root, cfg)
@@ -163,6 +202,12 @@ func listAllBranches(root string, workers int, cfg *Config) {
 	repos := cfg.filterReposForExecution(allRepos)
 	if len(repos) == 0 {
 		fmt.Println("No repos match the specified include/exclude criteria")
+		return
+	}
+
+	repos = cfg.filterReposByBranch(repos, workers)
+	if len(repos) == 0 {
+		fmt.Println("No repos match the specified branch criteria")
 		return
 	}
 
@@ -234,6 +279,12 @@ func executeCommandInRepos(root, command string, workers int, cfg *Config) {
 	repos := cfg.filterReposForExecution(allRepos)
 	if len(repos) == 0 {
 		fmt.Println("No repos match the specified include/exclude criteria")
+		return
+	}
+
+	repos = cfg.filterReposByBranch(repos, workers)
+	if len(repos) == 0 {
+		fmt.Println("No repos match the specified branch criteria")
 		return
 	}
 
@@ -378,6 +429,12 @@ func executeShellInRepos(root, command string, workers int, cfg *Config) {
 	repos := cfg.filterReposForExecution(allRepos)
 	if len(repos) == 0 {
 		fmt.Println("No repos match the specified include/exclude criteria")
+		return
+	}
+
+	repos = cfg.filterReposByBranch(repos, workers)
+	if len(repos) == 0 {
+		fmt.Println("No repos match the specified branch criteria")
 		return
 	}
 

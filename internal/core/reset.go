@@ -44,6 +44,12 @@ func syncBranch(root, branch, mode string, workers int, cfg *Config) {
 		return
 	}
 
+	repos = cfg.filterReposByBranch(repos, workers)
+	if len(repos) == 0 {
+		fmt.Println("No repos match the specified branch criteria")
+		return
+	}
+
 	// Destructive operations require interactive TTY and explicit confirmation.
 	if mode == "hard" || mode == "rebase" {
 		fileInfo, statErr := os.Stdin.Stat()

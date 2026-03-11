@@ -667,7 +667,7 @@ func TestSyncBranchSoft(t *testing.T) {
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	cfg := newConfig(defaultSkipDirs, nil, 20)
+	cfg := newConfig(defaultSkipDirs, nil, nil, nil, 20)
 	syncBranch(tmpDir, "main", "soft", 2, cfg)
 
 	_ = w.Close()
@@ -745,7 +745,7 @@ func TestSyncBranchSoftMixedOutcomes(t *testing.T) {
 	pr, pw, _ := os.Pipe()
 	os.Stdout = pw
 
-	cfg := newConfig(defaultSkipDirs, nil, 20)
+	cfg := newConfig(defaultSkipDirs, nil, nil, nil, 20)
 	syncBranch(tmpDir, "main", "soft", 2, cfg)
 
 	_ = pw.Close()

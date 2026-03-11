@@ -63,7 +63,7 @@ func TestFindGitRepos(t *testing.T) {
 	createDir(t, filepath.Join(tmpDir, "notgit"))
 	createGitRepo(t, filepath.Join(tmpDir, "vendor", "repo3"))
 
-	cfg := newConfig(defaultSkipDirs, nil, 20)
+	cfg := newConfig(defaultSkipDirs, nil, nil, nil, 20)
 	repos, err := findGitRepos(tmpDir, cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -105,7 +105,7 @@ func TestListAllBranches(t *testing.T) {
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	cfg := newConfig(defaultSkipDirs, nil, 20)
+	cfg := newConfig(defaultSkipDirs, nil, nil, nil, 20)
 	listAllBranches(tmpDir, 2, cfg)
 
 	_ = w.Close()
@@ -133,7 +133,7 @@ func TestSwitchBranches(t *testing.T) {
 
 	runCmd(t, repo1, "git", "checkout", "main")
 
-	cfg := newConfig(defaultSkipDirs, nil, 20)
+	cfg := newConfig(defaultSkipDirs, nil, nil, nil, 20)
 	switchBranches(tmpDir, "feature", 1, cfg)
 
 	branch, err := getBranch(repo1)
@@ -184,7 +184,7 @@ func TestExecuteCommandInRepos(t *testing.T) {
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	cfg := newConfig(defaultSkipDirs, nil, 20)
+	cfg := newConfig(defaultSkipDirs, nil, nil, nil, 20)
 	executeCommandInRepos(tmpDir, "status", 2, cfg)
 
 	_ = w.Close()
@@ -253,7 +253,7 @@ func TestExecuteShellInRepos(t *testing.T) {
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	cfg := newConfig(defaultSkipDirs, nil, 20)
+	cfg := newConfig(defaultSkipDirs, nil, nil, nil, 20)
 	executeShellInRepos(tmpDir, "echo test", 2, cfg)
 
 	_ = w.Close()
@@ -299,7 +299,7 @@ func TestRun(t *testing.T) {
 
 func TestConfigSkipSet(t *testing.T) {
 	dirs := []string{"node_modules", "vendor", ".git"}
-	cfg := newConfig(dirs, nil, 20)
+	cfg := newConfig(dirs, nil, nil, nil, 20)
 
 	if len(cfg.skipSet) != 3 {
 		t.Errorf("expected 3 items, got %d", len(cfg.skipSet))
@@ -311,7 +311,7 @@ func TestConfigSkipSet(t *testing.T) {
 }
 
 func TestConfigShouldSkipDir(t *testing.T) {
-	cfg := newConfig(defaultSkipDirs, []string{"vendor"}, 20)
+	cfg := newConfig(defaultSkipDirs, []string{"vendor"}, nil, nil, 20)
 
 	if !cfg.shouldSkipDir(".hidden") {
 		t.Error("should skip .hidden")
@@ -445,7 +445,7 @@ func TestShouldExecuteInRepo(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := newConfig(tt.skipDirs, tt.includeDirs, 20)
+			cfg := newConfig(tt.skipDirs, tt.includeDirs, nil, nil, 20)
 			result := cfg.shouldExecuteInRepo(tt.repoPath)
 			if result != tt.expected {
 				t.Errorf("shouldExecuteInRepo() = %v, expected %v", result, tt.expected)
@@ -613,7 +613,7 @@ func TestFilterReposForExecution(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := newConfig(tt.skipDirs, tt.includeDirs, 20)
+			cfg := newConfig(tt.skipDirs, tt.includeDirs, nil, nil, 20)
 			filtered := cfg.filterReposForExecution(repos)
 
 			if len(filtered) != tt.expectedCount {

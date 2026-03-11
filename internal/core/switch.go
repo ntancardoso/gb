@@ -31,6 +31,12 @@ func switchBranches(root, target string, workers int, cfg *Config) {
 		return
 	}
 
+	repos = cfg.filterReposByBranch(repos, workers)
+	if len(repos) == 0 {
+		fmt.Println("No repos match the specified branch criteria")
+		return
+	}
+
 	fmt.Println(StyleInfo.Render(fmt.Sprintf("Found %d repos (filtered from %d discovered), switching to %s with %d workers...", len(repos), len(allRepos), target, workers)))
 
 	logManager, err := NewLogManager()

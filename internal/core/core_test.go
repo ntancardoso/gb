@@ -63,7 +63,7 @@ func TestFindGitRepos(t *testing.T) {
 	createDir(t, filepath.Join(tmpDir, "notgit"))
 	createGitRepo(t, filepath.Join(tmpDir, "vendor", "repo3"))
 
-	cfg := newConfig(defaultSkipDirs, nil, nil, nil, 20)
+	cfg := newConfig(defaultExcludeDirs, nil, nil, nil, 20)
 	repos, err := findGitRepos(tmpDir, cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -105,7 +105,7 @@ func TestListAllBranches(t *testing.T) {
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	cfg := newConfig(defaultSkipDirs, nil, nil, nil, 20)
+	cfg := newConfig(defaultExcludeDirs, nil, nil, nil, 20)
 	listAllBranches(tmpDir, 2, cfg)
 
 	_ = w.Close()
@@ -133,7 +133,7 @@ func TestSwitchBranches(t *testing.T) {
 
 	runCmd(t, repo1, "git", "checkout", "main")
 
-	cfg := newConfig(defaultSkipDirs, nil, nil, nil, 20)
+	cfg := newConfig(defaultExcludeDirs, nil, nil, nil, 20)
 	switchBranches(tmpDir, "feature", 1, cfg)
 
 	branch, err := getBranch(repo1)
@@ -184,7 +184,7 @@ func TestExecuteCommandInRepos(t *testing.T) {
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	cfg := newConfig(defaultSkipDirs, nil, nil, nil, 20)
+	cfg := newConfig(defaultExcludeDirs, nil, nil, nil, 20)
 	executeCommandInRepos(tmpDir, "status", 2, cfg)
 
 	_ = w.Close()
@@ -253,7 +253,7 @@ func TestExecuteShellInRepos(t *testing.T) {
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	cfg := newConfig(defaultSkipDirs, nil, nil, nil, 20)
+	cfg := newConfig(defaultExcludeDirs, nil, nil, nil, 20)
 	executeShellInRepos(tmpDir, "echo test", 2, cfg)
 
 	_ = w.Close()
@@ -297,32 +297,32 @@ func TestRun(t *testing.T) {
 	_ = Run([]string{"-sh", "echo test"})
 }
 
-func TestConfigSkipSet(t *testing.T) {
+func TestConfigExcludeSet(t *testing.T) {
 	dirs := []string{"node_modules", "vendor", ".git"}
 	cfg := newConfig(dirs, nil, nil, nil, 20)
 
-	if len(cfg.skipSet) != 3 {
-		t.Errorf("expected 3 items, got %d", len(cfg.skipSet))
+	if len(cfg.excludeSet) != 3 {
+		t.Errorf("expected 3 items, got %d", len(cfg.excludeSet))
 	}
 
-	if _, exists := cfg.skipSet["node_modules"]; !exists {
-		t.Error("expected node_modules in skip set")
+	if _, exists := cfg.excludeSet["node_modules"]; !exists {
+		t.Error("expected node_modules in exclude set")
 	}
 }
 
-func TestConfigShouldSkipDir(t *testing.T) {
-	cfg := newConfig(defaultSkipDirs, []string{"vendor"}, nil, nil, 20)
+func TestConfigShouldExcludeDir(t *testing.T) {
+	cfg := newConfig(defaultExcludeDirs, []string{"vendor"}, nil, nil, 20)
 
-	if !cfg.shouldSkipDir(".hidden") {
-		t.Error("should skip .hidden")
+	if !cfg.shouldExcludeDir(".hidden") {
+		t.Error("should exclude .hidden")
 	}
 
-	if cfg.shouldSkipDir(".git") {
-		t.Error("should not skip .git")
+	if cfg.shouldExcludeDir(".git") {
+		t.Error("should not exclude .git")
 	}
 
-	if cfg.shouldSkipDir("vendor") {
-		t.Error("should not skip included vendor")
+	if cfg.shouldExcludeDir("vendor") {
+		t.Error("should not exclude included vendor")
 	}
 }
 
@@ -389,7 +389,7 @@ func TestShouldExecuteInRepo(t *testing.T) {
 	tests := []struct {
 		name        string
 		includeDirs []string
-		skipDirs    []string
+		excludeDirs []string
 		repoPath    string
 		expected    bool
 	}{
@@ -417,27 +417,27 @@ func TestShouldExecuteInRepo(t *testing.T) {
 			expected:    true,
 		},
 		{
-			name:     "skip exact match",
-			skipDirs: []string{"build", "temp"},
-			repoPath: "build",
-			expected: false,
+			name:        "exclude exact match",
+			excludeDirs: []string{"build", "temp"},
+			repoPath:    "build",
+			expected:    false,
 		},
 		{
-			name:     "skip no match",
-			skipDirs: []string{"build", "temp"},
-			repoPath: "vendor",
-			expected: true,
+			name:        "exclude no match",
+			excludeDirs: []string{"build", "temp"},
+			repoPath:    "vendor",
+			expected:    true,
 		},
 		{
-			name:     "skip parent path match",
-			skipDirs: []string{"build"},
-			repoPath: "build/debug/repo",
-			expected: false,
+			name:        "exclude parent path match",
+			excludeDirs: []string{"build"},
+			repoPath:    "build/debug/repo",
+			expected:    false,
 		},
 		{
-			name:        "include takes priority over skip",
+			name:        "include takes priority over exclude",
 			includeDirs: []string{"vendor"},
-			skipDirs:    []string{"vendor"},
+			excludeDirs: []string{"vendor"},
 			repoPath:    "vendor",
 			expected:    true,
 		},
@@ -445,7 +445,7 @@ func TestShouldExecuteInRepo(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := newConfig(tt.skipDirs, tt.includeDirs, nil, nil, 20)
+			cfg := newConfig(tt.excludeDirs, tt.includeDirs, nil, nil, 20)
 			result := cfg.shouldExecuteInRepo(tt.repoPath)
 			if result != tt.expected {
 				t.Errorf("shouldExecuteInRepo() = %v, expected %v", result, tt.expected)
@@ -575,7 +575,7 @@ func TestFilterReposForExecution(t *testing.T) {
 	tests := []struct {
 		name          string
 		includeDirs   []string
-		skipDirs      []string
+		excludeDirs   []string
 		expectedPaths []string
 		expectedCount int
 	}{
@@ -591,15 +591,15 @@ func TestFilterReposForExecution(t *testing.T) {
 			expectedCount: 3,
 		},
 		{
-			name:          "skip specific dirs",
-			skipDirs:      []string{"build"},
+			name:          "exclude specific dirs",
+			excludeDirs:   []string{"build"},
 			expectedPaths: []string{"vendor", "custom", "vendor/oca/project"},
 			expectedCount: 3,
 		},
 		{
 			name:          "include takes priority",
 			includeDirs:   []string{"vendor"},
-			skipDirs:      []string{"vendor"},
+			excludeDirs:   []string{"vendor"},
 			expectedPaths: []string{"vendor", "vendor/oca/project"},
 			expectedCount: 2,
 		},
@@ -613,7 +613,7 @@ func TestFilterReposForExecution(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := newConfig(tt.skipDirs, tt.includeDirs, nil, nil, 20)
+			cfg := newConfig(tt.excludeDirs, tt.includeDirs, nil, nil, 20)
 			filtered := cfg.filterReposForExecution(repos)
 
 			if len(filtered) != tt.expectedCount {

@@ -138,9 +138,9 @@ func (m model) View() string {
 
 	elapsed := time.Since(m.startTime).Truncate(time.Second)
 	if m.done {
-		sb.WriteString(fmt.Sprintf("✓ %s - Done\n\n", m.opName))
+		fmt.Fprintf(&sb, "✓ %s - Done\n\n", m.opName)
 	} else {
-		sb.WriteString(fmt.Sprintf("%s %s  %s\n\n", m.spinner.View(), m.opName, elapsed))
+		fmt.Fprintf(&sb, "%s %s  %s\n\n", m.spinner.View(), m.opName, elapsed)
 	}
 
 	completed, failed, processing, waiting := m.countStatuses()
@@ -148,8 +148,8 @@ func (m model) View() string {
 
 	sb.WriteString("  ")
 	sb.WriteString(m.progBar.ViewAs(pct))
-	sb.WriteString(fmt.Sprintf("  %d/%d  ✅ %d  ❌ %d  🔄 %d  ⏳ %d\n\n",
-		completed+failed, m.total, completed, failed, processing, waiting))
+	fmt.Fprintf(&sb, "  %d/%d  ✅ %d  ❌ %d  🔄 %d  ⏳ %d\n\n",
+		completed+failed, m.total, completed, failed, processing, waiting)
 
 	for _, relPath := range m.sortedPage() {
 		sb.WriteString("  ")
@@ -158,7 +158,7 @@ func (m model) View() string {
 	}
 
 	if m.totalPages() > 1 {
-		sb.WriteString(fmt.Sprintf("\n  Page %d/%d  ↑↓ PgUp/PgDn\n", m.page+1, m.totalPages()))
+		fmt.Fprintf(&sb, "\n  Page %d/%d  ↑↓ PgUp/PgDn\n", m.page+1, m.totalPages())
 	}
 
 	return sb.String()

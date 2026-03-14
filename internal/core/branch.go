@@ -149,7 +149,7 @@ func getBranch(path string) (string, error) {
 }
 
 func (cfg *Config) filterReposByBranch(repos []RepoInfo, workers int) []RepoInfo {
-	if len(cfg.includeBranchSet) == 0 && len(cfg.skipBranchSet) == 0 {
+	if len(cfg.includeBranchSet) == 0 && len(cfg.excludeBranchSet) == 0 {
 		return repos
 	}
 

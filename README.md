@@ -1,30 +1,18 @@
 # Git Blitz (gb)
 
+[![CI](https://github.com/ntancardoso/gb/actions/workflows/ci.yml/badge.svg)](https://github.com/ntancardoso/gb/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/ntancardoso/gb)](https://github.com/ntancardoso/gb/releases) [![Go version](https://img.shields.io/github/go-mod/go-version/ntancardoso/gb)](go.mod) [![License](https://img.shields.io/github/license/ntancardoso/gb)](LICENSE)
+
 A fast CLI tool for executing git and shell commands across multiple repositories simultaneously.
-
-## Use Cases
-
-- **Multi-Repo Command Execution** - Run any git or shell command across all repositories at once
-- **Branch Synchronization** - Switch all repos to the same branch in parallel
-- **Origin Sync** - Reset or rebase all repos to match `origin/<branch>`, like a bulk "sync branch" button
-- **Status Overview** - List current branches across all repositories
-- **Version Management** - Keep related projects (like Odoo/OCA modules) in sync
 
 ## Features
 
-- **Git Command Execution**: Execute any git command across all repositories
-- **Shell Command Execution**: Execute any shell command across all repositories
-- **Bulk Branch Switching**: Switch all repos to a target branch with smart fallbacks
-- **Origin Sync (soft reset)**: Move all repos' HEAD to `origin/<branch>` without touching working tree
-- **Origin Sync (hard reset)**: Discard local changes and reset all repos to `origin/<branch>`
-- **Origin Sync (rebase)**: Rebase all repos onto `origin/<branch>` with automatic conflict abort
-- **Branch Listing**: View current branches across all repositories
-- **Recursive Discovery**: Automatically finds all Git repositories in subdirectories
-- **Concurrent Processing**: Uses configurable worker pools for fast execution
-- **Flexible Filtering**: Skip or include specific directories with customizable rules
-- **Progress Display**: Real-time updates with pagination for large repo sets
-- **Log Capture**: Stores detailed logs for each repository operation
-- **Cross-Platform**: Works on Windows, Linux, and macOS with symlink/junction support
+- Run any git or shell command across all repos at once
+- Switch all repos to the same branch in parallel, falling back to a default if the branch doesn't exist
+- Soft reset, hard reset, or rebase all repos to match `origin/<branch>`
+- List current branches across all repos
+- Recursively discovers git repos in subdirectories
+- Configurable worker pool for parallel execution
+- Exclude or include specific directories and branches
 
 ## Installation
 
@@ -110,7 +98,7 @@ gb --version       # Long form
 
 ### Sync from Origin
 
-Sync all repos to match a branch on `origin` — similar to Bitbucket's "Sync branch" button but across your entire workspace at once.
+Sync all repos to match a branch on `origin` across your entire workspace at once.
 
 All three modes share the same pre-checks: repos are auto-switched to the target branch first (fetching from origin if needed). Repos are **skipped** (not failed) when the branch doesn't exist on origin, there is no origin remote, HEAD is detached, or the repo is already up to date.
 
@@ -157,13 +145,21 @@ gb --workers 50 -c "status"    # Long form
 gb -ps 10 -c "status"          # Show 10 repos per page
 gb --size 30 -c "status"       # Show 30 repos per page
 
-# Skip additional directories
-gb -s "build,dist,temp" -c "status"        # Short form
-gb --skipDirs "build,dist,temp" -c "status"  # Long form
+# Exclude additional directories
+gb -e "build,dist,temp" -c "status"           # Short form
+gb --excludeDirs "build,dist,temp" -c "status"  # Long form
 
-# Include normally skipped directories
-gb -i "vendor,node_modules" -l           # Short form
+# Include normally excluded directories
+gb -i "vendor,node_modules" -l                # Short form
 gb --includeDirs "vendor,node_modules" --list  # Long form
+
+# Only run in repos on a specific branch
+gb -ib main -c "fetch origin"                 # Short form
+gb --includeBranches main -c "fetch origin"   # Long form
+
+# Exclude repos on a specific branch
+gb -eb main -c "fetch origin"                 # Short form
+gb --excludeBranches main -c "fetch origin"   # Long form
 
 # Combine options (mix short and long forms)
 gb -w 10 --includeDirs "custom-vendor" -c "fetch"
@@ -183,12 +179,15 @@ Options:
   -sh, --shell string     Execute a shell command in all repositories
   -w, --workers int       Number of concurrent workers (default 20)
   -ps, --size int         Number of repos to display per page (default 20)
-  -s, --skipDirs string   Comma-separated list of directories to skip
-  -i, --includeDirs string
-                          Comma-separated list of directories to include
-  -rs, --reset-soft string  Soft reset all repos to origin/<branch>
-  -rh, --reset-hard string  Hard reset all repos to origin/<branch> (destructive, confirms first)
-  -rb, --rebase string      Rebase all repos onto origin/<branch> (confirms first)
+  -e, --excludeDirs string   Comma-separated list of directories to exclude from execution
+  -i, --includeDirs string   Comma-separated list of directories to include in execution
+  -rs, --reset-soft string   Soft reset all repos to origin/<branch>
+  -rh, --reset-hard string   Hard reset all repos to origin/<branch> (destructive, confirms first)
+  -rb, --rebase string       Rebase all repos onto origin/<branch> (confirms first)
+  -ib, --includeBranches string
+                             Only operate on repos currently on these branches (comma-separated)
+  -eb, --excludeBranches string
+                             Exclude repos currently on these branches (comma-separated)
 
 Examples:
   gb -c "status"               Execute 'git status' in all repositories
@@ -199,46 +198,25 @@ Examples:
   gb -l                        List all current branches
   gb -w 50 -l                  Fast branch listing with 50 workers
   gb --workers 5 main          Switch with 5 concurrent workers
-  gb -i "vendor,dist" 15.0     Include normally skipped directories
+  gb -e "build,temp" -l        List branches, excluding build and temp directories
+  gb -i "vendor,dist" 15.0     Include normally excluded directories
   gb -rs main                  Soft reset all repos to origin/main
   gb -rh feature/xyz           Hard reset all repos to origin/feature/xyz (with confirmation)
   gb -rb develop               Rebase all repos onto origin/develop (with confirmation)
+  gb -ib main -l               List branches, only repos currently on main
+  gb -eb main -c "fetch origin" Fetch in all repos except those on main
 ```
 
-## How It Works
+## Default Excluded Directories
 
-1. **Discovery**: Recursively scans directories for Git repositories
-2. **Filtering**: Applies include/exclude rules to select target repos
-3. **Parallel Execution**: Uses worker pools to process multiple repositories simultaneously
-4. **Progress Display**: Shows real-time updates with pagination for large sets
-5. **Log Capture**: Stores detailed logs for each repository operation
-6. **Summary**: Displays success/failure counts with option to review logs
-
-## Git Commands vs Shell Commands
-
-**Git Commands (`-c` / `--cmd`):**
-- Executes `git <command>` in each repository
-- Example: `gb -c "status"` runs `git status`
-- Example: `gb -c "fetch origin"` runs `git fetch origin`
-- Use this for git-specific operations
-
-**Shell Commands (`-sh` / `--shell`):**
-- Executes raw shell commands in each repository
-- Cross-platform support (automatically uses `sh -c` on Unix/Linux/macOS and `cmd /c` on Windows)
-- Example: `gb -sh "ls -la"` lists files in each repo directory
-- Example: `gb -sh "mkdir tmp"` creates a `tmp` directory in each repo
-- Use this for file operations, directory management, or any non-git shell command
-
-## Default Skip Directories
-
-By default, gb skips these directories to improve performance:
+By default, gb excludes these directories to improve performance:
 - `vendor`, `node_modules`, `.vscode`, `.idea`
 - `build`, `dist`, `out`, `target`, `bin`, `obj`
 - `.next`, `coverage`, `.nyc_output`
 - `__pycache__`, `.pytest_cache`, `.tox`
 - `.venv`, `venv`, `.env`, `env`
 
-Use `-i` / `--includeDirs` to include specific directories or `-s` / `--skipDirs` to override the defaults.
+Use `-i` / `--includeDirs` to include specific directories or `-e` / `--excludeDirs` to add directories to the exclude list.
 
 ## Example: Odoo Development Workflow
 

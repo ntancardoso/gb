@@ -16,7 +16,7 @@ const (
 var version = "dev"
 
 var (
-	defaultSkipDirs = []string{
+	defaultExcludeDirs = []string{
 		"vendor", "node_modules", ".vscode", ".idea", "build", "dist", "out",
 		"target", "bin", "obj", ".next", "coverage", ".nyc_output", "__pycache__",
 		".pytest_cache", ".tox", ".venv", "venv", ".env", "env",
@@ -24,18 +24,18 @@ var (
 )
 
 type Config struct {
-	skipSet          map[string]struct{}
+	excludeSet       map[string]struct{}
 	includeSet       map[string]struct{}
-	skipBranchSet    map[string]struct{}
+	excludeBranchSet map[string]struct{}
 	includeBranchSet map[string]struct{}
 	PageSize         int
 }
 
-func newConfig(skipDirs, includeDirs, skipBranches, includeBranches []string, pageSize int) *Config {
+func newConfig(excludeDirs, includeDirs, excludeBranches, includeBranches []string, pageSize int) *Config {
 	cfg := &Config{
-		skipSet:          make(map[string]struct{}),
+		excludeSet:       make(map[string]struct{}),
 		includeSet:       make(map[string]struct{}),
-		skipBranchSet:    make(map[string]struct{}),
+		excludeBranchSet: make(map[string]struct{}),
 		includeBranchSet: make(map[string]struct{}),
 		PageSize:         pageSize,
 	}
@@ -44,9 +44,9 @@ func newConfig(skipDirs, includeDirs, skipBranches, includeBranches []string, pa
 		cfg.includeSet[dir] = struct{}{}
 	}
 
-	for _, dir := range skipDirs {
+	for _, dir := range excludeDirs {
 		if _, included := cfg.includeSet[dir]; !included {
-			cfg.skipSet[dir] = struct{}{}
+			cfg.excludeSet[dir] = struct{}{}
 		}
 	}
 
@@ -54,9 +54,9 @@ func newConfig(skipDirs, includeDirs, skipBranches, includeBranches []string, pa
 		cfg.includeBranchSet[b] = struct{}{}
 	}
 
-	for _, b := range skipBranches {
+	for _, b := range excludeBranches {
 		if _, included := cfg.includeBranchSet[b]; !included {
-			cfg.skipBranchSet[b] = struct{}{}
+			cfg.excludeBranchSet[b] = struct{}{}
 		}
 	}
 
@@ -68,8 +68,8 @@ func (cfg *Config) shouldExecuteInBranch(branch string) bool {
 		_, ok := cfg.includeBranchSet[branch]
 		return ok
 	}
-	if len(cfg.skipBranchSet) > 0 {
-		_, ok := cfg.skipBranchSet[branch]
+	if len(cfg.excludeBranchSet) > 0 {
+		_, ok := cfg.excludeBranchSet[branch]
 		return !ok
 	}
 	return true
@@ -80,8 +80,8 @@ func (cfg *Config) shouldExecuteInRepo(relPath string) bool {
 		return cfg.containsPath(cfg.includeSet, relPath)
 	}
 
-	if len(cfg.skipSet) > 0 {
-		return !cfg.containsPath(cfg.skipSet, relPath)
+	if len(cfg.excludeSet) > 0 {
+		return !cfg.containsPath(cfg.excludeSet, relPath)
 	}
 
 	return true
@@ -118,7 +118,7 @@ func (cfg *Config) isParentPath(parent, child string) bool {
 }
 
 func (cfg *Config) filterReposForExecution(repos []RepoInfo) []RepoInfo {
-	if len(cfg.includeSet) == 0 && len(cfg.skipSet) == 0 {
+	if len(cfg.includeSet) == 0 && len(cfg.excludeSet) == 0 {
 		return repos
 	}
 
@@ -176,8 +176,8 @@ func Run(args []string) error {
 	workers := fs.Int("workers", defaultWorkers, "Number of concurrent workers")
 	fs.IntVar(workers, "w", defaultWorkers, "Number of concurrent workers (shorthand)")
 
-	skipDirsFlag := fs.String("skipDirs", "", "Comma-separated list of directories to exclude from command execution")
-	fs.StringVar(skipDirsFlag, "s", "", "Directories to exclude from execution (shorthand)")
+	excludeDirsFlag := fs.String("excludeDirs", "", "Comma-separated list of directories to exclude from command execution")
+	fs.StringVar(excludeDirsFlag, "e", "", "Directories to exclude from execution (shorthand)")
 
 	includeDirsFlag := fs.String("includeDirs", "", "Comma-separated list of directories to include in command execution (only execute in these directories)")
 	fs.StringVar(includeDirsFlag, "i", "", "Directories to include in execution (shorthand)")
@@ -185,8 +185,8 @@ func Run(args []string) error {
 	pageSize := fs.Int("size", defaultPageSize, "Number of repos to display per page")
 	fs.IntVar(pageSize, "ps", defaultPageSize, "Repos per page (shorthand)")
 
-	skipBranchesFlag := fs.String("skipBranches", "", "Comma-separated branch names to exclude")
-	fs.StringVar(skipBranchesFlag, "sb", "", "Branch names to exclude (shorthand)")
+	excludeBranchesFlag := fs.String("excludeBranches", "", "Comma-separated branch names to exclude")
+	fs.StringVar(excludeBranchesFlag, "eb", "", "Branch names to exclude (shorthand)")
 
 	includeBranchesFlag := fs.String("includeBranches", "", "Comma-separated branch names to include (only these)")
 	fs.StringVar(includeBranchesFlag, "ib", "", "Branch names to include (shorthand)")
@@ -213,7 +213,7 @@ func Run(args []string) error {
 		fmt.Println("  -sh, --shell string     Execute a shell command in all repositories")
 		fmt.Println("  -w, --workers int       Number of concurrent workers (default 20)")
 		fmt.Println("  -ps, --size int         Number of repos to display per page (default 20)")
-		fmt.Println("  -s, --skipDirs string   Comma-separated list of directories to exclude from execution")
+		fmt.Println("  -e, --excludeDirs string   Comma-separated list of directories to exclude from execution")
 		fmt.Println("  -i, --includeDirs string")
 		fmt.Println("                          Comma-separated list of directories to include in execution")
 		fmt.Println("  -rs, --reset-soft string  Soft reset all repos to origin/<branch>")
@@ -221,8 +221,8 @@ func Run(args []string) error {
 		fmt.Println("  -rb, --rebase string      Rebase all repos onto origin/<branch> (confirms first)")
 		fmt.Println("  -ib, --includeBranches string")
 		fmt.Println("                            Only operate on repos currently on these branches (comma-separated)")
-		fmt.Println("  -sb, --skipBranches string")
-		fmt.Println("                            Skip repos currently on these branches (comma-separated)")
+		fmt.Println("  -eb, --excludeBranches string")
+		fmt.Println("                            Exclude repos currently on these branches (comma-separated)")
 		fmt.Println("\nExamples:")
 		fmt.Println("  gb main                      Switch all repos to main branch")
 		fmt.Println("  gb -l                        List all current branches")
@@ -230,7 +230,7 @@ func Run(args []string) error {
 		fmt.Println("  gb -w 50 -l                  Fast branch listing with 50 workers")
 		fmt.Println("  gb --workers 5 main          Switch with 5 concurrent workers")
 		fmt.Println("  gb -i \"vendor,custom\" 15.0   Execute only in vendor and custom directories")
-		fmt.Println("  gb -s \"build,temp\" -l        List branches, excluding build and temp directories")
+		fmt.Println("  gb -e \"build,temp\" -l        List branches, excluding build and temp directories")
 		fmt.Println("  gb -c \"status\"               Execute 'git status' in all repositories")
 		fmt.Println("  gb -c \"status\" -i \"abc,def\"  Execute 'git status' only in abc and def directories")
 		fmt.Println("  gb --cmd \"fetch origin\"     Execute 'git fetch origin' in all repositories")
@@ -241,7 +241,7 @@ func Run(args []string) error {
 		fmt.Println("  gb -rh feature/xyz       Hard reset all repos to origin/feature/xyz (with confirmation)")
 		fmt.Println("  gb -rb develop           Rebase all repos onto origin/develop (with confirmation)")
 		fmt.Println("  gb -ib main -l           List branches, only repos currently on main")
-		fmt.Println("  gb -sb main -c \"fetch origin\"  Fetch in all repos except those on main")
+		fmt.Println("  gb -eb main -c \"fetch origin\"  Fetch in all repos except those on main")
 		fmt.Println("  gb -ib develop -c \"status\"     Git status only in repos on develop")
 	}
 
@@ -257,12 +257,12 @@ func Run(args []string) error {
 		return nil
 	}
 
-	skipDirs := parseCommaSeparated(*skipDirsFlag, defaultSkipDirs)
+	excludeDirs := parseCommaSeparated(*excludeDirsFlag, defaultExcludeDirs)
 	includeDirs := parseCommaSeparated(*includeDirsFlag, nil)
-	skipBranches := parseCommaSeparated(*skipBranchesFlag, nil)
+	excludeBranches := parseCommaSeparated(*excludeBranchesFlag, nil)
 	includeBranches := parseCommaSeparated(*includeBranchesFlag, nil)
 
-	cfg := newConfig(skipDirs, includeDirs, skipBranches, includeBranches, *pageSize)
+	cfg := newConfig(excludeDirs, includeDirs, excludeBranches, includeBranches, *pageSize)
 
 	root, _ := os.Getwd()
 	root = resolveRoot(root)

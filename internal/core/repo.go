@@ -44,7 +44,7 @@ func resolveSymlinkTarget(root, target string) string {
 	return target
 }
 
-func (cfg *Config) shouldSkipDir(name string) bool {
+func (cfg *Config) shouldExcludeDir(name string) bool {
 	if _, included := cfg.includeSet[name]; included {
 		return false
 	}
@@ -53,15 +53,15 @@ func (cfg *Config) shouldSkipDir(name string) bool {
 		return true
 	}
 
-	performanceSkipDirs := []string{
+	performanceExcludeDirs := []string{
 		"node_modules", "vendor", "__pycache__", ".pytest_cache",
 		"build", "dist", "out", "target", "bin", "obj",
 		".next", "coverage", ".nyc_output", ".tox",
 		".venv", "venv", ".env", "env",
 	}
 
-	for _, skipDir := range performanceSkipDirs {
-		if name == skipDir {
+	for _, excludeDir := range performanceExcludeDirs {
+		if name == excludeDir {
 			return true
 		}
 	}
@@ -109,7 +109,7 @@ func (s *repoScanner) walkFunc(root string) func(string, os.DirEntry, error) err
 
 		name := d.Name()
 
-		if s.cfg.shouldSkipDir(name) {
+		if s.cfg.shouldExcludeDir(name) {
 			s.skipped++
 			return filepath.SkipDir
 		}

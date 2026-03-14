@@ -60,6 +60,16 @@ func newConfig(excludeDirs, includeDirs, excludeBranches, includeBranches []stri
 		}
 	}
 
+	for _, b := range includeBranches {
+		cfg.includeBranchSet[b] = struct{}{}
+	}
+
+	for _, b := range skipBranches {
+		if _, included := cfg.includeBranchSet[b]; !included {
+			cfg.skipBranchSet[b] = struct{}{}
+		}
+	}
+
 	return cfg
 }
 

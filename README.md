@@ -16,26 +16,56 @@ A fast CLI tool for executing git and shell commands across multiple repositorie
 
 ## Installation
 
-### Download Binary (Recommended)
+### Linux / macOS
 
-**Windows:**
-1. Download and extract `gb.exe` from [Releases](https://github.com/ntancardoso/gb/releases)
-2. Move to a folder in your PATH or add the folder to PATH
+```sh
+curl -fsSL https://raw.githubusercontent.com/ntancardoso/gb/main/install.sh | sh
+```
 
-**Linux/macOS:**
-1. Download and extract `gb` from [Releases](https://github.com/ntancardoso/gb/releases)
-2. Make executable and move to PATH:
+### Windows (PowerShell)
+
+```powershell
+irm https://raw.githubusercontent.com/ntancardoso/gb/main/install.ps1 | iex
+```
+
+Installs to `%LOCALAPPDATA%\Programs\gb` and adds it to your user PATH automatically.
+
+### Uninstall
+
+**Linux / macOS:**
+```sh
+curl -fsSL https://raw.githubusercontent.com/ntancardoso/gb/main/install.sh | sh -s -- --uninstall
+```
+
+**Windows (PowerShell):**
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/ntancardoso/gb/main/install.ps1))) -Uninstall
+```
+
+### Manual Installation
+
+If your environment restricts running remote scripts, download the binary directly from [Releases](https://github.com/ntancardoso/gb/releases).
+
+**Linux / macOS:**
 ```bash
+# Extract and install
+tar -xzf gb_<version>_<os>_<arch>.tar.gz
 chmod +x gb
 sudo mv gb /usr/local/bin/
 ```
 
+**Windows:**
+1. Download and extract `gb_<version>_windows_amd64.zip` from [Releases](https://github.com/ntancardoso/gb/releases)
+2. Move `gb.exe` to a folder in your PATH, or add the folder to PATH
+
 ### Alternative: Go Install (requires Go)
+
 ```bash
 go install github.com/ntancardoso/gb/cmd/gb@latest
 ```
 
 ### Build from Source (requires Go)
+
 ```bash
 git clone https://github.com/ntancardoso/gb.git
 cd gb
@@ -44,8 +74,7 @@ go build -o gb cmd/gb/main.go
 # Linux/macOS
 sudo mv gb /usr/local/bin/
 
-# Windows
-# Move gb.exe to a directory in your PATH
+# Windows: move gb.exe to a directory in your PATH
 ```
 
 ## Usage

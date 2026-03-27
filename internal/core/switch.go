@@ -11,6 +11,7 @@ import (
 type SwitchResult struct {
 	RelPath string
 	Success bool
+	Skipped bool
 	Error   string
 }
 
@@ -26,6 +27,7 @@ func switchBranches(root, target string, workers int, cfg *Config) {
 	}
 
 	repos := cfg.filterReposForExecution(allRepos)
+	repos = cfg.filterWorktrees(repos)
 	if len(repos) == 0 {
 		fmt.Println("No repos match the specified include/exclude criteria")
 		return
@@ -37,7 +39,7 @@ func switchBranches(root, target string, workers int, cfg *Config) {
 		return
 	}
 
-	fmt.Println(StyleInfo.Render(fmt.Sprintf("Found %d repos (filtered from %d discovered), switching to %s with %d workers...", len(repos), len(allRepos), target, workers)))
+	fmt.Println(StyleInfo.Render(fmt.Sprintf("Found %d repos (filtered from %d discovered), switching to %s with %d workers...", len(repos), len(allRepos), target, min(workers, len(repos)))))
 
 	logManager, err := NewLogManager()
 	if err != nil {
@@ -72,7 +74,9 @@ func switchBranches(root, target string, workers int, cfg *Config) {
 					_ = logFile.Close()
 				}
 
-				if res.Success {
+				if res.Skipped {
+					progress.UpdateStatus(r.RelPath, statusSkipped, res.Error)
+				} else if res.Success {
 					progress.UpdateStatus(r.RelPath, statusCompleted, "")
 				} else {
 					progress.UpdateStatus(r.RelPath, statusFailed, res.Error)
@@ -96,10 +100,12 @@ func switchBranches(root, target string, workers int, cfg *Config) {
 	}()
 
 	var results []SwitchResult
-	var ok, fail int
+	var ok, fail, skip int
 	for res := range resCh {
 		results = append(results, res)
-		if res.Success {
+		if res.Skipped {
+			skip++
+		} else if res.Success {
 			ok++
 		} else {
 			fail++
@@ -110,9 +116,10 @@ func switchBranches(root, target string, workers int, cfg *Config) {
 	progress.StopInput()
 
 	fmt.Println("\n" + StyleBold.Render("--- Summary ---"))
-	fmt.Printf("Switched %s repos to %s, %s failed\n",
+	fmt.Printf("Switched %s repos to %s, %s skipped (branch in worktree), %s failed\n",
 		StyleSuccess.Render(fmt.Sprintf("%d", ok)),
 		target,
+		StyleSkipped.Render(fmt.Sprintf("%d", skip)),
 		StyleFailed.Render(fmt.Sprintf("%d", fail)))
 
 	if PromptViewLogs() {
@@ -127,6 +134,30 @@ func switchBranches(root, target string, workers int, cfg *Config) {
 	}
 }
 
+func isBranchLockedInWorktree(repoPath, targetBranch string) bool {
+	cmd := exec.Command("git", "worktree", "list", "--porcelain")
+	cmd.Dir = repoPath
+	out, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	// Porcelain output: blocks separated by blank lines; first block is always the main worktree.
+	// We only care about linked worktrees (blocks after the first).
+	normalized := strings.ReplaceAll(string(out), "\r\n", "\n")
+	blocks := strings.Split(strings.TrimSpace(normalized), "\n\n")
+	if len(blocks) <= 1 {
+		return false
+	}
+	for _, block := range blocks[1:] {
+		for _, line := range strings.Split(block, "\n") {
+			if strings.TrimSpace(line) == "branch refs/heads/"+targetBranch {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func processSingleRepo(repo RepoInfo, targetBranch string, logFile *os.File) SwitchResult {
 	log := func(format string, args ...interface{}) {
 		if logFile != nil {
@@ -136,6 +167,11 @@ func processSingleRepo(repo RepoInfo, targetBranch string, logFile *os.File) Swi
 
 	log("=== Processing %s ===", repo.RelPath)
 	log("Target branch: %s", targetBranch)
+
+	if isBranchLockedInWorktree(repo.Path, targetBranch) {
+		log("Target branch is locked in a worktree, skipping")
+		return SwitchResult{RelPath: repo.RelPath, Skipped: true, Error: "branch locked in worktree"}
+	}
 
 	localCheck := exec.Command("git", "show-ref", "--verify", "--quiet", "refs/heads/"+targetBranch)
 	localCheck.Dir = repo.Path

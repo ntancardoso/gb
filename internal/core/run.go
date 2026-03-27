@@ -29,15 +29,17 @@ type Config struct {
 	excludeBranchSet map[string]struct{}
 	includeBranchSet map[string]struct{}
 	PageSize         int
+	IncludeWorktrees bool
 }
 
-func newConfig(excludeDirs, includeDirs, excludeBranches, includeBranches []string, pageSize int) *Config {
+func newConfig(excludeDirs, includeDirs, excludeBranches, includeBranches []string, pageSize int, includeWorktrees bool) *Config {
 	cfg := &Config{
 		excludeSet:       make(map[string]struct{}),
 		includeSet:       make(map[string]struct{}),
 		excludeBranchSet: make(map[string]struct{}),
 		includeBranchSet: make(map[string]struct{}),
 		PageSize:         pageSize,
+		IncludeWorktrees: includeWorktrees,
 	}
 
 	for _, dir := range includeDirs {
@@ -117,6 +119,19 @@ func (cfg *Config) isParentPath(parent, child string) bool {
 	return strings.HasPrefix(childWithSep, parentWithSep)
 }
 
+func (cfg *Config) filterWorktrees(repos []RepoInfo) []RepoInfo {
+	if cfg.IncludeWorktrees {
+		return repos
+	}
+	var out []RepoInfo
+	for _, r := range repos {
+		if !r.IsWorktree {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 func (cfg *Config) filterReposForExecution(repos []RepoInfo) []RepoInfo {
 	if len(cfg.includeSet) == 0 && len(cfg.excludeSet) == 0 {
 		return repos
@@ -145,6 +160,8 @@ func reorderArgs(args []string) []string {
 				"-l": true, "--list": true,
 				"-v": true, "--version": true,
 				"-h": true, "--help": true,
+				"-iw": true, "--include-worktrees": true,
+				"-wl": true, "--worktree-list": true,
 			}
 			if !boolFlags[arg] && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
 				i++
@@ -203,6 +220,21 @@ func Run(args []string) error {
 	rebaseBranch := fs.String("rebase", "", "Rebase all repos onto origin/<branch> (confirms first)")
 	fs.StringVar(rebaseBranch, "rb", "", "Rebase onto origin/<branch> (shorthand)")
 
+	includeWorktrees := fs.Bool("include-worktrees", false, "Include worktree repos in operations (default: excluded)")
+	fs.BoolVar(includeWorktrees, "iw", false, "Include worktree repos (shorthand)")
+
+	wtCreate := fs.String("worktree-create", "", "Create worktrees for <branch> across all repos")
+	fs.StringVar(wtCreate, "wc", "", "Create worktrees (shorthand)")
+
+	wtRemove := fs.String("worktree-remove", "", "Remove worktrees for <branch> across all repos")
+	fs.StringVar(wtRemove, "wr", "", "Remove worktrees (shorthand)")
+
+	wtList := fs.Bool("worktree-list", false, "List all active worktrees across all repos")
+	fs.BoolVar(wtList, "wl", false, "List worktrees (shorthand)")
+
+	wtOpen := fs.String("worktree-open", "", "Print worktree paths for <branch> across all repos")
+	fs.StringVar(wtOpen, "wo", "", "Print worktree paths (shorthand)")
+
 	fs.Usage = func() {
 		_, _ = fmt.Fprintf(fs.Output(), "Usage: gb [options] <branch_name>\n\n")
 		fmt.Println("Options:")
@@ -223,6 +255,12 @@ func Run(args []string) error {
 		fmt.Println("                            Only operate on repos currently on these branches (comma-separated)")
 		fmt.Println("  -eb, --excludeBranches string")
 		fmt.Println("                            Exclude repos currently on these branches (comma-separated)")
+		fmt.Println("  -iw, --include-worktrees  Include worktree repos in operations (default: excluded)")
+		fmt.Println("\nWorktree Commands:")
+		fmt.Println("  -wl, --worktree-list              List all active worktrees across all repos")
+		fmt.Println("  -wc, --worktree-create string     Create worktrees for <branch> (optional base as positional arg, default master)")
+		fmt.Println("  -wr, --worktree-remove string     Remove worktrees for <branch> across all repos")
+		fmt.Println("  -wo, --worktree-open string       Print worktree paths for <branch> across all repos")
 		fmt.Println("\nExamples:")
 		fmt.Println("  gb main                      Switch all repos to main branch")
 		fmt.Println("  gb -l                        List all current branches")
@@ -243,6 +281,12 @@ func Run(args []string) error {
 		fmt.Println("  gb -ib main -l           List branches, only repos currently on main")
 		fmt.Println("  gb -eb main -c \"fetch origin\"  Fetch in all repos except those on main")
 		fmt.Println("  gb -ib develop -c \"status\"     Git status only in repos on develop")
+		fmt.Println("  gb -l -iw                      List branches including worktree repos")
+		fmt.Println("  gb -wl                         List all worktrees across repos")
+		fmt.Println("  gb -wc feature/my-task         Create worktrees for feature/my-task (base: master)")
+		fmt.Println("  gb -wc feature/my-task develop Create worktrees from develop branch")
+		fmt.Println("  gb -wo feature/my-task         Print worktree paths for feature/my-task")
+		fmt.Println("  gb -wr feature/my-task         Remove worktrees for feature/my-task")
 	}
 
 	if err := fs.Parse(args); err != nil {
@@ -262,7 +306,7 @@ func Run(args []string) error {
 	excludeBranches := parseCommaSeparated(*excludeBranchesFlag, nil)
 	includeBranches := parseCommaSeparated(*includeBranchesFlag, nil)
 
-	cfg := newConfig(excludeDirs, includeDirs, excludeBranches, includeBranches, *pageSize)
+	cfg := newConfig(excludeDirs, includeDirs, excludeBranches, includeBranches, *pageSize, *includeWorktrees)
 
 	root, _ := os.Getwd()
 	root = resolveRoot(root)
@@ -294,6 +338,30 @@ func Run(args []string) error {
 
 	if *rebaseBranch != "" {
 		syncBranch(root, *rebaseBranch, "rebase", *workers, cfg)
+		return nil
+	}
+
+	if *wtList {
+		worktreeListAll(root, *workers, cfg)
+		return nil
+	}
+
+	if *wtCreate != "" {
+		base := "master"
+		if fs.NArg() >= 1 {
+			base = fs.Arg(0)
+		}
+		worktreeCreate(root, *wtCreate, base, *workers, cfg)
+		return nil
+	}
+
+	if *wtRemove != "" {
+		worktreeRemove(root, *wtRemove, *workers, cfg)
+		return nil
+	}
+
+	if *wtOpen != "" {
+		worktreeOpen(root, *wtOpen, *workers, cfg)
 		return nil
 	}
 

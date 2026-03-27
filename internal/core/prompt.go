@@ -169,12 +169,24 @@ func DisplaySwitchLogs(logManager *LogManager, results []SwitchResult) {
 	fmt.Println(StyleFailed.Render("--- Failed Repositories ---"))
 	hasFailures := false
 	for _, res := range results {
-		if !res.Success {
+		if !res.Success && !res.Skipped {
 			hasFailures = true
 			displayRepoLog(logManager, res.RelPath, StyleFailed.Render("FAILED"))
 		}
 	}
 	if !hasFailures {
+		fmt.Println(StyleDim.Render("(none)"))
+	}
+
+	fmt.Println("\n" + StyleSkipped.Render("--- Skipped Repositories ---"))
+	hasSkipped := false
+	for _, res := range results {
+		if res.Skipped {
+			hasSkipped = true
+			fmt.Printf("  [SKIPPED] %s - %s\n", res.RelPath, res.Error)
+		}
+	}
+	if !hasSkipped {
 		fmt.Println(StyleDim.Render("(none)"))
 	}
 

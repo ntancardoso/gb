@@ -63,7 +63,7 @@ func TestFindGitRepos(t *testing.T) {
 	createDir(t, filepath.Join(tmpDir, "notgit"))
 	createGitRepo(t, filepath.Join(tmpDir, "vendor", "repo3"))
 
-	cfg := newConfig(defaultExcludeDirs, nil, nil, nil, 20)
+	cfg := newConfig(defaultExcludeDirs, nil, nil, nil, 20, false)
 	repos, err := findGitRepos(tmpDir, cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -105,7 +105,7 @@ func TestListAllBranches(t *testing.T) {
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	cfg := newConfig(defaultExcludeDirs, nil, nil, nil, 20)
+	cfg := newConfig(defaultExcludeDirs, nil, nil, nil, 20, false)
 	listAllBranches(tmpDir, 2, cfg)
 
 	_ = w.Close()
@@ -133,7 +133,7 @@ func TestSwitchBranches(t *testing.T) {
 
 	runCmd(t, repo1, "git", "checkout", "main")
 
-	cfg := newConfig(defaultExcludeDirs, nil, nil, nil, 20)
+	cfg := newConfig(defaultExcludeDirs, nil, nil, nil, 20, false)
 	switchBranches(tmpDir, "feature", 1, cfg)
 
 	branch, err := getBranch(repo1)
@@ -184,7 +184,7 @@ func TestExecuteCommandInRepos(t *testing.T) {
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	cfg := newConfig(defaultExcludeDirs, nil, nil, nil, 20)
+	cfg := newConfig(defaultExcludeDirs, nil, nil, nil, 20, false)
 	executeCommandInRepos(tmpDir, "status", 2, cfg)
 
 	_ = w.Close()
@@ -253,7 +253,7 @@ func TestExecuteShellInRepos(t *testing.T) {
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	cfg := newConfig(defaultExcludeDirs, nil, nil, nil, 20)
+	cfg := newConfig(defaultExcludeDirs, nil, nil, nil, 20, false)
 	executeShellInRepos(tmpDir, "echo test", 2, cfg)
 
 	_ = w.Close()
@@ -299,7 +299,7 @@ func TestRun(t *testing.T) {
 
 func TestConfigExcludeSet(t *testing.T) {
 	dirs := []string{"node_modules", "vendor", ".git"}
-	cfg := newConfig(dirs, nil, nil, nil, 20)
+	cfg := newConfig(dirs, nil, nil, nil, 20, false)
 
 	if len(cfg.excludeSet) != 3 {
 		t.Errorf("expected 3 items, got %d", len(cfg.excludeSet))
@@ -311,7 +311,7 @@ func TestConfigExcludeSet(t *testing.T) {
 }
 
 func TestConfigShouldExcludeDir(t *testing.T) {
-	cfg := newConfig(defaultExcludeDirs, []string{"vendor"}, nil, nil, 20)
+	cfg := newConfig(defaultExcludeDirs, []string{"vendor"}, nil, nil, 20, false)
 
 	if !cfg.shouldExcludeDir(".hidden") {
 		t.Error("should exclude .hidden")
@@ -445,7 +445,7 @@ func TestShouldExecuteInRepo(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := newConfig(tt.excludeDirs, tt.includeDirs, nil, nil, 20)
+			cfg := newConfig(tt.excludeDirs, tt.includeDirs, nil, nil, 20, false)
 			result := cfg.shouldExecuteInRepo(tt.repoPath)
 			if result != tt.expected {
 				t.Errorf("shouldExecuteInRepo() = %v, expected %v", result, tt.expected)
@@ -564,6 +564,133 @@ func TestIsParentPath(t *testing.T) {
 	}
 }
 
+func TestFilterWorktrees(t *testing.T) {
+	repos := []RepoInfo{
+		{Path: "/root/repo1", RelPath: "repo1", IsWorktree: false},
+		{Path: "/root/repo2", RelPath: "repo2", IsWorktree: true},
+		{Path: "/root/repo3", RelPath: "repo3", IsWorktree: false},
+		{Path: "/root/wt", RelPath: "wt", IsWorktree: true},
+	}
+
+	t.Run("excludes worktrees by default", func(t *testing.T) {
+		cfg := newConfig(nil, nil, nil, nil, 20, false)
+		filtered := cfg.filterWorktrees(repos)
+		if len(filtered) != 2 {
+			t.Fatalf("expected 2 repos, got %d", len(filtered))
+		}
+		for _, r := range filtered {
+			if r.IsWorktree {
+				t.Errorf("worktree repo %q should have been excluded", r.RelPath)
+			}
+		}
+	})
+
+	t.Run("includes worktrees when flag set", func(t *testing.T) {
+		cfg := newConfig(nil, nil, nil, nil, 20, true)
+		filtered := cfg.filterWorktrees(repos)
+		if len(filtered) != 4 {
+			t.Fatalf("expected 4 repos, got %d", len(filtered))
+		}
+	})
+}
+
+func TestIsWorktreeDetection(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	mainRepo := filepath.Join(tmpDir, "main-repo")
+	createGitRepo(t, mainRepo)
+	runCmd(t, mainRepo, "git", "checkout", "-b", "wt-branch")
+	writeFile(t, mainRepo, "wt.txt", "worktree file")
+	runCmd(t, mainRepo, "git", "add", ".")
+	runCmd(t, mainRepo, "git", "commit", "-m", "wt commit")
+	runCmd(t, mainRepo, "git", "checkout", "main")
+
+	wtPath := filepath.Join(tmpDir, "linked-wt")
+	runCmd(t, mainRepo, "git", "worktree", "add", wtPath, "wt-branch")
+
+	cfg := newConfig(defaultExcludeDirs, nil, nil, nil, 20, false)
+	repos, err := findGitRepos(tmpDir, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	repoMap := make(map[string]RepoInfo)
+	for _, r := range repos {
+		repoMap[r.RelPath] = r
+	}
+
+	main, ok := repoMap["main-repo"]
+	if !ok {
+		t.Fatal("main-repo not found")
+	}
+	if main.IsWorktree {
+		t.Error("main-repo should not be marked as a worktree")
+	}
+
+	wt, ok := repoMap["linked-wt"]
+	if !ok {
+		t.Fatal("linked-wt not found in discovered repos")
+	}
+	if !wt.IsWorktree {
+		t.Error("linked-wt should be marked as a worktree")
+	}
+}
+
+func TestIsBranchLockedInWorktree(t *testing.T) {
+	tmpDir := t.TempDir()
+	mainRepo := filepath.Join(tmpDir, "repo")
+	createGitRepo(t, mainRepo)
+
+	runCmd(t, mainRepo, "git", "checkout", "-b", "locked-branch")
+	writeFile(t, mainRepo, "locked.txt", "locked")
+	runCmd(t, mainRepo, "git", "add", ".")
+	runCmd(t, mainRepo, "git", "commit", "-m", "locked commit")
+	runCmd(t, mainRepo, "git", "checkout", "main")
+
+	wtPath := filepath.Join(tmpDir, "wt")
+	runCmd(t, mainRepo, "git", "worktree", "add", wtPath, "locked-branch")
+
+	if !isBranchLockedInWorktree(mainRepo, "locked-branch") {
+		t.Error("expected locked-branch to be detected as locked in worktree")
+	}
+
+	if isBranchLockedInWorktree(mainRepo, "main") {
+		t.Error("main should not be reported as locked (it is the main worktree)")
+	}
+
+	if isBranchLockedInWorktree(mainRepo, "nonexistent") {
+		t.Error("nonexistent branch should not be reported as locked")
+	}
+}
+
+func TestProcessSingleRepoSkipsLockedBranch(t *testing.T) {
+	tmpDir := t.TempDir()
+	mainRepo := filepath.Join(tmpDir, "repo")
+	createGitRepo(t, mainRepo)
+
+	runCmd(t, mainRepo, "git", "checkout", "-b", "locked-branch")
+	writeFile(t, mainRepo, "locked.txt", "locked")
+	runCmd(t, mainRepo, "git", "add", ".")
+	runCmd(t, mainRepo, "git", "commit", "-m", "locked commit")
+	runCmd(t, mainRepo, "git", "checkout", "main")
+
+	wtPath := filepath.Join(tmpDir, "wt")
+	runCmd(t, mainRepo, "git", "worktree", "add", wtPath, "locked-branch")
+
+	repo := RepoInfo{Path: mainRepo, RelPath: "repo"}
+	result := processSingleRepo(repo, "locked-branch", nil)
+
+	if !result.Skipped {
+		t.Error("expected result to be skipped when branch is locked in worktree")
+	}
+	if result.Success {
+		t.Error("skipped result should not be Success")
+	}
+	if !strings.Contains(result.Error, "locked in worktree") {
+		t.Errorf("expected 'locked in worktree' in error, got: %s", result.Error)
+	}
+}
+
 func TestFilterReposForExecution(t *testing.T) {
 	repos := []RepoInfo{
 		{Path: "/root/vendor", RelPath: "vendor"},
@@ -613,7 +740,7 @@ func TestFilterReposForExecution(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := newConfig(tt.excludeDirs, tt.includeDirs, nil, nil, 20)
+			cfg := newConfig(tt.excludeDirs, tt.includeDirs, nil, nil, 20, false)
 			filtered := cfg.filterReposForExecution(repos)
 
 			if len(filtered) != tt.expectedCount {

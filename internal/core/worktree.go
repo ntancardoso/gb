@@ -127,7 +127,7 @@ func worktreeCreate(root, branch, base string, workers int, cfg *Config) {
 				progress.UpdateStatus(r.RelPath, statusProcessing, "")
 
 				logFile, _ := logManager.CreateLogFile(r.RelPath)
-				var out io.Writer = io.Discard
+				out := io.Discard
 				if logFile != nil {
 					out = logFile
 				}
@@ -137,7 +137,7 @@ func worktreeCreate(root, branch, base string, workers int, cfg *Config) {
 
 				if _, statErr := os.Stat(wtPath); statErr == nil {
 					msg := fmt.Sprintf("worktree already exists at %s", wtPath)
-					fmt.Fprintln(out, msg)
+					_, _ = fmt.Fprintln(out, msg)
 					progress.UpdateStatus(r.RelPath, statusSkipped, "worktree already exists")
 					if logFile != nil {
 						_ = logFile.Close()
@@ -148,9 +148,9 @@ func worktreeCreate(root, branch, base string, workers int, cfg *Config) {
 
 				// Create branch from base if it doesn't exist locally.
 				if _, _, err2 := executeGitCommandWithRetry(context.Background(), r.Path, "show-ref", "--verify", "--quiet", "refs/heads/"+branch); err2 != nil {
-					fmt.Fprintf(out, "Creating branch '%s' from '%s'...\n", branch, base)
+					_, _ = fmt.Fprintf(out, "Creating branch '%s' from '%s'...\n", branch, base)
 					if _, _, err3 := executeGitCommandWithRetry(context.Background(), r.Path, "branch", branch, base); err3 != nil {
-						fmt.Fprintf(out, "Failed to create branch: %v\n", err3)
+						_, _ = fmt.Fprintf(out, "Failed to create branch: %v\n", err3)
 						progress.UpdateStatus(r.RelPath, statusFailed, "branch creation failed")
 						if logFile != nil {
 							_ = logFile.Close()
@@ -171,17 +171,17 @@ func worktreeCreate(root, branch, base string, workers int, cfg *Config) {
 
 				if _, _, err3 := executeGitCommandWithRetry(context.Background(), r.Path, "worktree", "add", wtPath, branch); err3 != nil {
 					cmdErr = err3
-					fmt.Fprintf(out, "git worktree add failed: %v\n", err3)
+					_, _ = fmt.Fprintf(out, "git worktree add failed: %v\n", err3)
 				} else {
 					// Copy .env if present.
 					envSrc := filepath.Join(r.Path, ".env")
 					if _, statErr := os.Stat(envSrc); statErr == nil {
 						envDst := filepath.Join(wtPath, ".env")
 						if copyErr := copyFile(envSrc, envDst); copyErr == nil {
-							fmt.Fprintf(out, "Copied .env to worktree.\n")
+							_, _ = fmt.Fprintf(out, "Copied .env to worktree.\n")
 						}
 					}
-					fmt.Fprintf(out, "Worktree ready: %s\n", wtPath)
+					_, _ = fmt.Fprintf(out, "Worktree ready: %s\n", wtPath)
 				}
 
 				if logFile != nil {
@@ -280,7 +280,7 @@ func worktreeRemove(root, branch string, workers int, cfg *Config) {
 				progress.UpdateStatus(r.RelPath, statusProcessing, "")
 
 				logFile, _ := logManager.CreateLogFile(r.RelPath)
-				var out io.Writer = io.Discard
+				out := io.Discard
 				if logFile != nil {
 					out = logFile
 				}
@@ -288,7 +288,7 @@ func worktreeRemove(root, branch string, workers int, cfg *Config) {
 				wtPath := worktreePath(r.Path, branch)
 
 				if _, statErr := os.Stat(wtPath); statErr != nil {
-					fmt.Fprintf(out, "No worktree found at %s, skipping\n", wtPath)
+					_, _ = fmt.Fprintf(out, "No worktree found at %s, skipping\n", wtPath)
 					progress.UpdateStatus(r.RelPath, statusSkipped, "no worktree found")
 					if logFile != nil {
 						_ = logFile.Close()
@@ -299,9 +299,9 @@ func worktreeRemove(root, branch string, workers int, cfg *Config) {
 
 				_, _, cmdErr := executeGitCommandWithRetry(context.Background(), r.Path, "worktree", "remove", wtPath)
 				if cmdErr != nil {
-					fmt.Fprintf(out, "git worktree remove failed: %v\n", cmdErr)
+					_, _ = fmt.Fprintf(out, "git worktree remove failed: %v\n", cmdErr)
 				} else {
-					fmt.Fprintf(out, "Removed worktree: %s\n", wtPath)
+					_, _ = fmt.Fprintf(out, "Removed worktree: %s\n", wtPath)
 					// Clean up empty parent dirs (best-effort).
 					_ = os.Remove(filepath.Dir(wtPath))
 					_ = os.Remove(filepath.Dir(filepath.Dir(wtPath)))
@@ -426,13 +426,13 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer in.Close()
+	defer func() { _ = in.Close() }()
 
 	out, err := os.Create(dst)
 	if err != nil {
 		return err
 	}
-	defer out.Close()
+	defer func() { _ = out.Close() }()
 
 	if _, err = io.Copy(out, in); err != nil {
 		_ = os.Remove(dst)

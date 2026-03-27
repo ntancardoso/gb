@@ -18,6 +18,7 @@ const (
 	statusProcessing = "processing"
 	statusCompleted  = "completed"
 	statusFailed     = "failed"
+	statusSkipped    = "skipped"
 )
 
 type statusMsg struct{ relPath, state, message string }
@@ -143,13 +144,13 @@ func (m model) View() string {
 		fmt.Fprintf(&sb, "%s %s  %s\n\n", m.spinner.View(), m.opName, elapsed)
 	}
 
-	completed, failed, processing, waiting := m.countStatuses()
-	pct := float64(completed+failed) / float64(m.total)
+	completed, failed, processing, waiting, skipped := m.countStatuses()
+	pct := float64(completed+failed+skipped) / float64(m.total)
 
 	sb.WriteString("  ")
 	sb.WriteString(m.progBar.ViewAs(pct))
-	fmt.Fprintf(&sb, "  %d/%d  ✅ %d  ❌ %d  🔄 %d  ⏳ %d\n\n",
-		completed+failed, m.total, completed, failed, processing, waiting)
+	fmt.Fprintf(&sb, "  %d/%d  ✅ %d  ❌ %d  ⏭️ %d  🔄 %d  ⏳ %d\n\n",
+		completed+failed+skipped, m.total, completed, failed, skipped, processing, waiting)
 
 	for _, relPath := range m.sortedPage() {
 		sb.WriteString("  ")
@@ -184,12 +185,18 @@ func (m model) formatRepoLine(relPath string, st repoStatus) string {
 		return "⏳ " + StyleWaiting.Render(relPath)
 	case statusCompleted:
 		return "✅ " + StyleSuccess.Render(relPath)
+	case statusSkipped:
+		skipSuffix := ""
+		if st.message != "" {
+			skipSuffix = "  " + StyleDim.Render(st.message)
+		}
+		return "⏭️ " + StyleSkipped.Render(relPath) + skipSuffix
 	default:
 		return "⏳ " + relPath
 	}
 }
 
-func (m model) countStatuses() (completed, failed, processing, waiting int) {
+func (m model) countStatuses() (completed, failed, processing, waiting, skipped int) {
 	for _, st := range m.statuses {
 		switch st.state {
 		case statusCompleted:
@@ -200,6 +207,8 @@ func (m model) countStatuses() (completed, failed, processing, waiting int) {
 			processing++
 		case statusWaiting:
 			waiting++
+		case statusSkipped:
+			skipped++
 		}
 	}
 	return
@@ -221,7 +230,8 @@ func (m model) sortedPage() []string {
 		statusFailed:     0,
 		statusProcessing: 1,
 		statusWaiting:    2,
-		statusCompleted:  3,
+		statusSkipped:    3,
+		statusCompleted:  4,
 	}
 
 	sorted := make([]string, len(pageItems))

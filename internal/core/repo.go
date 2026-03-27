@@ -10,8 +10,9 @@ import (
 )
 
 type RepoInfo struct {
-	Path    string
-	RelPath string
+	Path       string
+	RelPath    string
+	IsWorktree bool
 }
 
 func resolveRoot(root string) string {
@@ -123,7 +124,9 @@ func (s *repoScanner) walkFunc(root string) func(string, os.DirEntry, error) err
 		s.printProgress()
 		if s.isGitRepo(path) {
 			rel, _ := filepath.Rel(root, path)
-			s.repos = append(s.repos, RepoInfo{Path: path, RelPath: rel})
+			gitInfo, _ := os.Stat(filepath.Join(path, ".git"))
+			isWorktree := gitInfo != nil && !gitInfo.IsDir()
+			s.repos = append(s.repos, RepoInfo{Path: path, RelPath: rel, IsWorktree: isWorktree})
 			return filepath.SkipDir
 		}
 

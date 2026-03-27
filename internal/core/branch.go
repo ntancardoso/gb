@@ -31,6 +31,7 @@ type CommandResult struct {
 	Output  string
 	Error   error
 	Retries int
+	Skipped bool
 }
 
 func executeGitCommandWithRetry(ctx context.Context, dir string, args ...string) ([]byte, int, error) {
@@ -200,6 +201,7 @@ func listAllBranches(root string, workers int, cfg *Config) {
 	}
 
 	repos := cfg.filterReposForExecution(allRepos)
+	repos = cfg.filterWorktrees(repos)
 	if len(repos) == 0 {
 		fmt.Println("No repos match the specified include/exclude criteria")
 		return
@@ -277,6 +279,7 @@ func executeCommandInRepos(root, command string, workers int, cfg *Config) {
 	}
 
 	repos := cfg.filterReposForExecution(allRepos)
+	repos = cfg.filterWorktrees(repos)
 	if len(repos) == 0 {
 		fmt.Println("No repos match the specified include/exclude criteria")
 		return
@@ -295,7 +298,7 @@ func executeCommandInRepos(root, command string, workers int, cfg *Config) {
 	}
 
 	fmt.Println(StyleInfo.Render(fmt.Sprintf("Found %d repos (filtered from %d discovered), executing 'git %s' with %d workers...",
-		len(repos), len(allRepos), command, workers)))
+		len(repos), len(allRepos), command, min(workers, len(repos)))))
 
 	logManager, err := NewLogManager()
 	if err != nil {
@@ -427,6 +430,7 @@ func executeShellInRepos(root, command string, workers int, cfg *Config) {
 	}
 
 	repos := cfg.filterReposForExecution(allRepos)
+	repos = cfg.filterWorktrees(repos)
 	if len(repos) == 0 {
 		fmt.Println("No repos match the specified include/exclude criteria")
 		return
@@ -444,7 +448,7 @@ func executeShellInRepos(root, command string, workers int, cfg *Config) {
 	}
 
 	fmt.Println(StyleInfo.Render(fmt.Sprintf("Found %d repos (filtered from %d discovered), executing '%s' with %d workers...",
-		len(repos), len(allRepos), command, workers)))
+		len(repos), len(allRepos), command, min(workers, len(repos)))))
 
 	logManager, err := NewLogManager()
 	if err != nil {

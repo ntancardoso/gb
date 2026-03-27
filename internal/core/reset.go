@@ -39,6 +39,7 @@ func syncBranch(root, branch, mode string, workers int, cfg *Config) {
 	}
 
 	repos := cfg.filterReposForExecution(allRepos)
+	repos = cfg.filterWorktrees(repos)
 	if len(repos) == 0 {
 		fmt.Println("No repos match the specified include/exclude criteria")
 		return
@@ -68,7 +69,7 @@ func syncBranch(root, branch, mode string, workers int, cfg *Config) {
 
 	opDesc := operationDescription(mode, branch)
 	fmt.Println(StyleInfo.Render(fmt.Sprintf("Found %d repos (filtered from %d discovered), running '%s' with %d workers...",
-		len(repos), len(allRepos), opDesc, workers)))
+		len(repos), len(allRepos), opDesc, min(workers, len(repos)))))
 
 	logManager, err := NewLogManager()
 	if err != nil {

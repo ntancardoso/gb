@@ -34,6 +34,7 @@ release:
     owner: ntancardoso
     name: gb
   prerelease: auto
+  replace_existing_artifacts: true
 
 dist: bin/release
 

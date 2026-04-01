@@ -68,7 +68,7 @@ func switchBranches(root, target string, workers int, cfg *Config) {
 					logFile = nil
 				}
 
-				res := processSingleRepo(r, target, logFile)
+				res := processSingleRepo(r, target, cfg.Remote, logFile)
 
 				if logFile != nil {
 					_ = logFile.Close()
@@ -158,7 +158,7 @@ func isBranchLockedInWorktree(repoPath, targetBranch string) bool {
 	return false
 }
 
-func processSingleRepo(repo RepoInfo, targetBranch string, logFile *os.File) SwitchResult {
+func processSingleRepo(repo RepoInfo, targetBranch, remote string, logFile *os.File) SwitchResult {
 	log := func(format string, args ...interface{}) {
 		if logFile != nil {
 			_, _ = fmt.Fprintf(logFile, format+"\n", args...)
@@ -181,7 +181,7 @@ func processSingleRepo(repo RepoInfo, targetBranch string, logFile *os.File) Swi
 
 	if !branchExists {
 		log("Checking remote for branch...")
-		remoteCheck := exec.Command("git", "ls-remote", "--exit-code", "--heads", "origin", targetBranch)
+		remoteCheck := exec.Command("git", "ls-remote", "--exit-code", "--heads", remote, targetBranch)
 		remoteCheck.Dir = repo.Path
 		if remoteCheck.Run() == nil {
 			checkCmd := exec.Command("git", "rev-parse", "--is-shallow-repository")
@@ -189,9 +189,7 @@ func processSingleRepo(repo RepoInfo, targetBranch string, logFile *os.File) Swi
 			out, err := checkCmd.Output()
 			isShallow := err == nil && strings.TrimSpace(string(out)) == "true"
 
-			log("Is shallow repository: %v", isShallow)
-
-			args := []string{"fetch", "origin"}
+			args := []string{"fetch", remote}
 			if isShallow {
 				args = append(args, "--depth=1")
 			}
@@ -206,11 +204,7 @@ func processSingleRepo(repo RepoInfo, targetBranch string, logFile *os.File) Swi
 			}
 			if err := fetchCmd.Run(); err != nil {
 				log("Fetch failed: %v", err)
-				return SwitchResult{
-					RelPath: repo.RelPath,
-					Success: false,
-					Error:   "fetch failed",
-				}
+				return SwitchResult{RelPath: repo.RelPath, Success: false, Error: "fetch failed"}
 			}
 			log("Fetch completed successfully")
 		} else {
@@ -232,8 +226,8 @@ func processSingleRepo(repo RepoInfo, targetBranch string, logFile *os.File) Swi
 	}
 
 	log("Switch failed, trying to create tracking branch...")
-	log("Executing: git switch -c %s --track origin/%s", targetBranch, targetBranch)
-	trackCmd := exec.Command("git", "switch", "-c", targetBranch, "--track", "origin/"+targetBranch)
+	log("Executing: git switch -c %s --track %s/%s", targetBranch, remote, targetBranch)
+	trackCmd := exec.Command("git", "switch", "-c", targetBranch, "--track", remote+"/"+targetBranch)
 	trackCmd.Dir = repo.Path
 	if logFile != nil {
 		trackCmd.Stdout = logFile
@@ -245,9 +239,5 @@ func processSingleRepo(repo RepoInfo, targetBranch string, logFile *os.File) Swi
 	}
 
 	log("All switch attempts failed")
-	return SwitchResult{
-		RelPath: repo.RelPath,
-		Success: false,
-		Error:   "switch failed",
-	}
+	return SwitchResult{RelPath: repo.RelPath, Success: false, Error: "switch failed"}
 }

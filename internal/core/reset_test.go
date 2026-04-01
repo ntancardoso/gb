@@ -77,21 +77,69 @@ func makeRepoWithConflict(t *testing.T) (repoDir, remoteDir string) {
 
 // --- helper checks ---
 
-func TestCheckOriginExists(t *testing.T) {
+func TestCheckRemoteExists(t *testing.T) {
 	t.Run("no origin", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		createGitRepo(t, tmpDir)
-		if checkOriginExists(tmpDir) {
+		if checkRemoteExists(tmpDir, "origin") {
 			t.Error("expected no origin remote")
 		}
 	})
 
 	t.Run("with origin", func(t *testing.T) {
 		repoDir, _ := makeRepoWithRemote(t)
-		if !checkOriginExists(repoDir) {
+		if !checkRemoteExists(repoDir, "origin") {
 			t.Error("expected origin remote to exist")
 		}
 	})
+}
+
+func TestResolveRemoteAndBranch(t *testing.T) {
+	repoDir, remoteDir := makeRepoWithRemote(t)
+
+	// Add a second remote named "upstream".
+	upstream := t.TempDir()
+	runCmd(t, upstream, "git", "init", "--bare", "-b", "main")
+	runCmd(t, repoDir, "git", "remote", "add", "upstream", upstream)
+
+	_ = remoteDir // used via makeRepoWithRemote
+
+	cases := []struct {
+		branchArg     string
+		defaultRemote string
+		wantRemote    string
+		wantBranch    string
+	}{
+		// bare branch names
+		{"main", "origin", "origin", "main"},
+		{"main", "upstream", "upstream", "main"},
+
+		// inline remote prefix
+		{"origin/main", "origin", "origin", "main"},
+		{"upstream/main", "origin", "upstream", "main"},
+
+		// inline remote with slashed branch name
+		{"origin/feat/branch1", "origin", "origin", "feat/branch1"},
+		{"upstream/release/v1.0", "origin", "upstream", "release/v1.0"},
+
+		// slashed branch name with NO matching remote — uses defaultRemote
+		{"feat/branch1", "origin", "origin", "feat/branch1"},
+		{"feat/branch1", "upstream", "upstream", "feat/branch1"},
+		{"release/v1.0", "origin", "origin", "release/v1.0"},
+
+		// unknown remote prefix — treated as branch name
+		{"noremote/main", "origin", "origin", "noremote/main"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.branchArg+"_default_"+tc.defaultRemote, func(t *testing.T) {
+			gotRemote, gotBranch := resolveRemoteAndBranch(repoDir, tc.branchArg, tc.defaultRemote)
+			if gotRemote != tc.wantRemote || gotBranch != tc.wantBranch {
+				t.Errorf("resolveRemoteAndBranch(%q, %q) = (%q, %q), want (%q, %q)",
+					tc.branchArg, tc.defaultRemote, gotRemote, gotBranch, tc.wantRemote, tc.wantBranch)
+			}
+		})
+	}
 }
 
 func TestCheckHasCommits(t *testing.T) {
@@ -134,11 +182,11 @@ func TestCheckDetachedHEAD(t *testing.T) {
 	})
 }
 
-func TestCheckBranchOnOrigin(t *testing.T) {
+func TestCheckBranchOnRemote(t *testing.T) {
 	repoDir, _ := makeRepoWithRemote(t)
 
 	t.Run("existing branch", func(t *testing.T) {
-		found, err := checkBranchOnOrigin(repoDir, "main")
+		found, err := checkBranchOnRemote(repoDir, "main", "origin")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -148,7 +196,7 @@ func TestCheckBranchOnOrigin(t *testing.T) {
 	})
 
 	t.Run("non-existent branch", func(t *testing.T) {
-		found, err := checkBranchOnOrigin(repoDir, "does-not-exist-xyz")
+		found, err := checkBranchOnRemote(repoDir, "does-not-exist-xyz", "origin")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -161,14 +209,14 @@ func TestCheckBranchOnOrigin(t *testing.T) {
 func TestCheckAlreadyAtTarget(t *testing.T) {
 	t.Run("already at target", func(t *testing.T) {
 		repoDir, _ := makeRepoWithRemote(t)
-		if !checkAlreadyAtTarget(repoDir, "main") {
+		if !checkAlreadyAtTarget(repoDir, "main", "origin") {
 			t.Error("expected already at origin/main")
 		}
 	})
 
 	t.Run("ahead of target", func(t *testing.T) {
 		repoDir, _ := makeRepoAheadOfOrigin(t)
-		if checkAlreadyAtTarget(repoDir, "main") {
+		if checkAlreadyAtTarget(repoDir, "main", "origin") {
 			t.Error("expected NOT at origin/main (local is ahead)")
 		}
 	})
@@ -319,7 +367,7 @@ func TestProcessSingleResetSkipNoOrigin(t *testing.T) {
 	createGitRepo(t, tmpDir)
 
 	repo := RepoInfo{Path: tmpDir, RelPath: "test"}
-	res := processSingleReset(repo, "main", "soft", nil)
+	res := processSingleReset(repo, "main", "soft", "origin", nil)
 
 	if !res.Skipped {
 		t.Error("expected Skipped=true for no origin")
@@ -340,7 +388,7 @@ func TestProcessSingleResetSkipNoCommits(t *testing.T) {
 	runCmd(t, tmpDir, "git", "remote", "add", "origin", remoteDir)
 
 	repo := RepoInfo{Path: tmpDir, RelPath: "test"}
-	res := processSingleReset(repo, "main", "soft", nil)
+	res := processSingleReset(repo, "main", "soft", "origin", nil)
 
 	if !res.Skipped {
 		t.Error("expected Skipped=true for no commits")
@@ -357,7 +405,7 @@ func TestProcessSingleResetSkipDetachedHEAD(t *testing.T) {
 	runCmd(t, repoDir, "git", "checkout", hash)
 
 	repo := RepoInfo{Path: repoDir, RelPath: "test"}
-	res := processSingleReset(repo, "main", "soft", nil)
+	res := processSingleReset(repo, "main", "soft", "origin", nil)
 
 	if !res.Skipped {
 		t.Error("expected Skipped=true for detached HEAD")
@@ -371,7 +419,7 @@ func TestProcessSingleResetSkipBranchNotOnOrigin(t *testing.T) {
 	repoDir, _ := makeRepoAheadOfOrigin(t)
 
 	repo := RepoInfo{Path: repoDir, RelPath: "test"}
-	res := processSingleReset(repo, "no-such-branch-xyz", "soft", nil)
+	res := processSingleReset(repo, "no-such-branch-xyz", "soft", "origin", nil)
 
 	if !res.Skipped {
 		t.Error("expected Skipped=true for branch not on origin")
@@ -386,7 +434,7 @@ func TestProcessSingleResetSkipAlreadyAtTarget(t *testing.T) {
 	// local HEAD == origin/main — no local commits ahead
 
 	repo := RepoInfo{Path: repoDir, RelPath: "test"}
-	res := processSingleReset(repo, "main", "soft", nil)
+	res := processSingleReset(repo, "main", "soft", "origin", nil)
 
 	if !res.Skipped {
 		t.Error("expected Skipped=true for already up to date")
@@ -403,14 +451,14 @@ func TestProcessSingleResetSoftMovesHEAD(t *testing.T) {
 	// local has one commit ahead of origin/main
 
 	repo := RepoInfo{Path: repoDir, RelPath: "test"}
-	res := processSingleReset(repo, "main", "soft", nil)
+	res := processSingleReset(repo, "main", "soft", "origin", nil)
 
 	if !res.Success {
 		t.Fatalf("expected Success=true, got error: %q", res.Error)
 	}
 
 	// HEAD should now equal origin/main
-	if !checkAlreadyAtTarget(repoDir, "main") {
+	if !checkAlreadyAtTarget(repoDir, "main", "origin") {
 		t.Error("expected HEAD to be at origin/main after soft reset")
 	}
 
@@ -429,7 +477,7 @@ func TestProcessSingleResetSoftWarnsStagedChanges(t *testing.T) {
 	runCmd(t, repoDir, "git", "add", "extra.txt")
 
 	repo := RepoInfo{Path: repoDir, RelPath: "test"}
-	res := processSingleReset(repo, "main", "soft", nil)
+	res := processSingleReset(repo, "main", "soft", "origin", nil)
 
 	if !res.Success {
 		t.Fatalf("expected Success=true, got error: %q", res.Error)
@@ -445,14 +493,14 @@ func TestProcessSingleResetHardDiscardsChanges(t *testing.T) {
 	repoDir, _ := makeRepoAheadOfOrigin(t)
 
 	repo := RepoInfo{Path: repoDir, RelPath: "test"}
-	res := processSingleReset(repo, "main", "hard", nil)
+	res := processSingleReset(repo, "main", "hard", "origin", nil)
 
 	if !res.Success {
 		t.Fatalf("expected Success=true, got error: %q", res.Error)
 	}
 
 	// HEAD should be at origin/main
-	if !checkAlreadyAtTarget(repoDir, "main") {
+	if !checkAlreadyAtTarget(repoDir, "main", "origin") {
 		t.Error("expected HEAD to be at origin/main after hard reset")
 	}
 
@@ -472,7 +520,7 @@ func TestProcessSingleResetHardSkipsMidMerge(t *testing.T) {
 	}
 
 	repo := RepoInfo{Path: repoDir, RelPath: "test"}
-	res := processSingleReset(repo, "main", "hard", nil)
+	res := processSingleReset(repo, "main", "hard", "origin", nil)
 
 	if !res.Skipped {
 		t.Error("expected Skipped=true for mid-merge repo")
@@ -489,7 +537,7 @@ func TestProcessSingleResetRebaseHappyPath(t *testing.T) {
 	// local = origin/main + one extra commit; rebase is a no-conflict fast-forward
 
 	repo := RepoInfo{Path: repoDir, RelPath: "test"}
-	res := processSingleReset(repo, "main", "rebase", nil)
+	res := processSingleReset(repo, "main", "rebase", "origin", nil)
 
 	if !res.Success {
 		t.Fatalf("expected Success=true, got error: %q", res.Error)
@@ -508,7 +556,7 @@ func TestProcessSingleResetRebaseFailsDirtyTree(t *testing.T) {
 	writeFile(t, repoDir, "dirty.txt", "dirty")
 
 	repo := RepoInfo{Path: repoDir, RelPath: "test"}
-	res := processSingleReset(repo, "main", "rebase", nil)
+	res := processSingleReset(repo, "main", "rebase", "origin", nil)
 
 	if res.Success || res.Skipped {
 		t.Error("expected failure for dirty working tree during rebase")
@@ -528,7 +576,7 @@ func TestProcessSingleResetRebaseSkipsIfInProgress(t *testing.T) {
 	}
 
 	repo := RepoInfo{Path: repoDir, RelPath: "test"}
-	res := processSingleReset(repo, "main", "rebase", nil)
+	res := processSingleReset(repo, "main", "rebase", "origin", nil)
 
 	if !res.Skipped {
 		t.Error("expected Skipped=true for rebase already in progress")
@@ -538,27 +586,29 @@ func TestProcessSingleResetRebaseSkipsIfInProgress(t *testing.T) {
 	}
 }
 
-// --- processSingleReset: auto-switch to target branch ---
+// --- processSingleReset: current branch must not change ---
 
-func TestProcessSingleResetSwitchesToTargetBranch(t *testing.T) {
-	repoDir, _ := makeRepoWithRemote(t)
+func TestProcessSingleResetStaysOnCurrentBranch(t *testing.T) {
+	repoDir, remoteDir := makeRepoWithRemote(t)
 
-	// Create a "develop" branch, push it to origin so origin/develop exists.
-	runCmd(t, repoDir, "git", "checkout", "-b", "develop")
-	runCmd(t, repoDir, "git", "push", "origin", "develop")
+	// Push a new commit to origin/main via another clone so origin/main is ahead.
+	otherDir := t.TempDir()
+	runCmd(t, otherDir, "git", "init", "-b", "main")
+	runCmd(t, otherDir, "git", "config", "user.name", "test")
+	runCmd(t, otherDir, "git", "config", "user.email", "test@test.com")
+	runCmd(t, otherDir, "git", "remote", "add", "origin", remoteDir)
+	runCmd(t, otherDir, "git", "fetch", "origin")
+	runCmd(t, otherDir, "git", "checkout", "-b", "main", "--track", "origin/main")
+	writeFile(t, otherDir, "from-origin.txt", "new content on origin")
+	runCmd(t, otherDir, "git", "add", ".")
+	runCmd(t, otherDir, "git", "commit", "-m", "new origin commit")
+	runCmd(t, otherDir, "git", "push", "origin", "main")
 
-	// Add a local commit on develop that has NOT been pushed — local is now
-	// ahead of origin/develop, so the reset will actually execute.
-	writeFile(t, repoDir, "local-develop.txt", "local develop content")
-	runCmd(t, repoDir, "git", "add", ".")
-	runCmd(t, repoDir, "git", "commit", "-m", "local develop commit ahead of origin")
+	// Create and switch to a feature branch — the operation must NOT switch away.
+	runCmd(t, repoDir, "git", "checkout", "-b", "feat/my-task")
 
-	// Switch back to main so we're on a different branch.
-	runCmd(t, repoDir, "git", "checkout", "main")
-
-	// processSingleReset should auto-switch to "develop" then hard-reset it.
 	repo := RepoInfo{Path: repoDir, RelPath: "test"}
-	res := processSingleReset(repo, "develop", "hard", nil)
+	res := processSingleReset(repo, "main", "hard", "origin", nil)
 
 	if !res.Success {
 		t.Fatalf("expected Success=true, got error: %q (skipped=%v reason=%q)", res.Error, res.Skipped, res.SkipReason)
@@ -568,13 +618,13 @@ func TestProcessSingleResetSwitchesToTargetBranch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if current != "develop" {
-		t.Errorf("expected current branch 'develop', got %q", current)
+	if current != "feat/my-task" {
+		t.Errorf("expected current branch to remain 'feat/my-task', got %q", current)
 	}
 
-	// The local commit was discarded by hard reset, so the file must be gone.
-	if _, err := os.Stat(filepath.Join(repoDir, "local-develop.txt")); !os.IsNotExist(err) {
-		t.Error("expected local-develop.txt to be removed after hard reset")
+	// Hard reset brought origin/main's content to feat/my-task.
+	if _, statErr := os.Stat(filepath.Join(repoDir, "from-origin.txt")); os.IsNotExist(statErr) {
+		t.Error("expected from-origin.txt to exist after hard reset to origin/main")
 	}
 }
 
@@ -585,7 +635,7 @@ func TestProcessSingleResetRebaseConflict(t *testing.T) {
 	// local main and origin/main diverge on conflict.txt → rebase must conflict
 
 	repo := RepoInfo{Path: repoDir, RelPath: "test"}
-	res := processSingleReset(repo, "main", "rebase", nil)
+	res := processSingleReset(repo, "main", "rebase", "origin", nil)
 
 	if res.Success || res.Skipped {
 		t.Errorf("expected failure for rebase conflict, got success=%v skipped=%v", res.Success, res.Skipped)
@@ -630,7 +680,7 @@ func TestProcessSingleResetFetchWhenAlreadyOnBranch(t *testing.T) {
 	// repoDir's local origin/main ref is now stale (still C0, not the new push).
 
 	repo := RepoInfo{Path: repoDir, RelPath: "test"}
-	res := processSingleReset(repo, "main", "soft", nil)
+	res := processSingleReset(repo, "main", "soft", "origin", nil)
 
 	// Without the fetch fix, checkAlreadyAtTarget would compare HEAD(C0) == stale
 	// origin/main(C0) and return true → skip. With the fix, fetch updates origin/main
@@ -641,7 +691,7 @@ func TestProcessSingleResetFetchWhenAlreadyOnBranch(t *testing.T) {
 	}
 
 	// HEAD should now be at the new remote commit.
-	if !checkAlreadyAtTarget(repoDir, "main") {
+	if !checkAlreadyAtTarget(repoDir, "main", "origin") {
 		t.Error("expected HEAD to be at origin/main after soft reset")
 	}
 }
@@ -667,7 +717,7 @@ func TestSyncBranchSoft(t *testing.T) {
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	cfg := newConfig(defaultExcludeDirs, nil, nil, nil, 20, false)
+	cfg := newConfig(defaultExcludeDirs, nil, nil, nil, 20, false, "origin")
 	syncBranch(tmpDir, "main", "soft", 2, cfg)
 
 	_ = w.Close()
@@ -745,7 +795,7 @@ func TestSyncBranchSoftMixedOutcomes(t *testing.T) {
 	pr, pw, _ := os.Pipe()
 	os.Stdout = pw
 
-	cfg := newConfig(defaultExcludeDirs, nil, nil, nil, 20, false)
+	cfg := newConfig(defaultExcludeDirs, nil, nil, nil, 20, false, "origin")
 	syncBranch(tmpDir, "main", "soft", 2, cfg)
 
 	_ = pw.Close()

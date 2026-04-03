@@ -8,6 +8,12 @@ package core
 //
 //  2. Feature: configurable remote name via -r / --remote flag.
 //
+//  3. Worktree path convention: sibling directory <repo>-<branch-suffix>.
+//
+//  4. Worktree branch creation fallback to remote-tracking ref when no local branch exists.
+//
+//  5. Hard reset and rebase always execute even when HEAD already equals origin/branch.
+//
 // All tests use only local bare repos so no network access is required.
 
 import (
@@ -371,5 +377,107 @@ func TestE2ECustomRemoteSwitchBranch(t *testing.T) {
 	}
 	if branch != "develop" {
 		t.Errorf("expected current branch 'develop', got %q", branch)
+	}
+}
+
+// --- Worktree path convention ---
+
+// TestWorktreePathSibling verifies the sibling directory naming convention:
+// <parent>/<repo-basename>-<branch-suffix>.
+func TestWorktreePathSibling(t *testing.T) {
+	cases := []struct {
+		repoPath string
+		branch   string
+		want     string
+	}{
+		{"/projects/projA", "feat/abc", "/projects/projA-abc"},
+		{"/projects/projA", "test", "/projects/projA-test"},
+		{"/projects/projA", "fix/login/v2", "/projects/projA-v2"},
+		{"/projects/my-service", "release/1.0", "/projects/my-service-1.0"},
+	}
+	for _, tc := range cases {
+		got := worktreePath(filepath.FromSlash(tc.repoPath), tc.branch)
+		want := filepath.FromSlash(tc.want)
+		if got != want {
+			t.Errorf("worktreePath(%q, %q) = %q, want %q", tc.repoPath, tc.branch, got, want)
+		}
+	}
+}
+
+// --- Worktree creation with remote-only base ---
+
+// TestWorktreeCreateRemoteOnlyBase verifies that when the base branch (e.g.
+// "main") only exists as a remote-tracking ref and not as a local branch,
+// worktreeCreate still creates the worktree successfully.
+func TestWorktreeCreateRemoteOnlyBase(t *testing.T) {
+	remoteDir := t.TempDir()
+	parentDir := t.TempDir()
+	repoDir := filepath.Join(parentDir, "projA")
+
+	// Set up: bare remote + working repo whose only branch is main (no local master).
+	runCmd(t, remoteDir, "git", "init", "--bare", "-b", "main")
+	createGitRepo(t, repoDir)
+	runCmd(t, repoDir, "git", "remote", "add", "origin", remoteDir)
+	runCmd(t, repoDir, "git", "push", "origin", "main")
+	runCmd(t, repoDir, "git", "fetch", "origin")
+
+	// No local "main" branch yet after fetch — only origin/main tracking ref exists.
+	// Delete the local main branch to simulate the "remote-only base" scenario.
+	runCmd(t, repoDir, "git", "checkout", "--detach")
+	runCmd(t, repoDir, "git", "branch", "-D", "main")
+
+	cfg := newConfig(defaultExcludeDirs, nil, nil, nil, 20, false, "origin")
+	worktreeCreate(parentDir, "feat/my-task", "main", 2, cfg)
+
+	// Worktree must exist at the sibling path projA-my-task.
+	wtPath := filepath.Join(parentDir, "projA-my-task")
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("expected worktree at %s, got: %v", wtPath, err)
+	}
+}
+
+// --- Hard reset and rebase run even when already at target ---
+
+// TestHardResetRunsWhenAlreadyAtTarget verifies that -rh does NOT skip when
+// HEAD already equals origin/main (working tree may be dirty with tracked changes).
+func TestHardResetRunsWhenAlreadyAtTarget(t *testing.T) {
+	repoDir, _ := makeRepoWithRemote(t)
+
+	// Modify a tracked file — HEAD is still at origin/main but working tree is dirty.
+	writeFile(t, repoDir, "README.md", "modified content — should be discarded")
+
+	repo := RepoInfo{Path: repoDir, RelPath: "repo"}
+	res := processSingleReset(repo, "main", "hard", "origin", nil)
+
+	if res.Skipped {
+		t.Fatalf("hard reset must not be skipped even when HEAD == origin/main; got skipped: %q", res.SkipReason)
+	}
+	if !res.Success {
+		t.Fatalf("expected Success=true, got error: %q", res.Error)
+	}
+
+	// README.md must be restored to its committed content.
+	content, err := os.ReadFile(filepath.Join(repoDir, "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(content), "modified content") {
+		t.Error("expected hard reset to restore README.md to committed content")
+	}
+}
+
+// TestRebaseRunsWhenAlreadyAtTarget verifies that -rb does NOT skip when
+// HEAD already equals origin/main; git handles the no-op gracefully.
+func TestRebaseRunsWhenAlreadyAtTarget(t *testing.T) {
+	repoDir, _ := makeRepoWithRemote(t)
+
+	repo := RepoInfo{Path: repoDir, RelPath: "repo"}
+	res := processSingleReset(repo, "main", "rebase", "origin", nil)
+
+	if res.Skipped {
+		t.Fatalf("rebase must not be skipped even when HEAD == origin/main; got skipped: %q", res.SkipReason)
+	}
+	if !res.Success {
+		t.Fatalf("expected Success=true, got error: %q", res.Error)
 	}
 }

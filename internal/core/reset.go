@@ -309,7 +309,7 @@ func processSingleReset(repo RepoInfo, branch, mode, remote string, logFile *os.
 		return ResetResult{RelPath: repo.RelPath, Success: false, Error: "fetch failed"}
 	}
 
-	if checkAlreadyAtTarget(repo.Path, branch, remote) {
+	if mode == "soft" && checkAlreadyAtTarget(repo.Path, branch, remote) {
 		log("Skipping: already up to date")
 		return ResetResult{RelPath: repo.RelPath, Skipped: true, SkipReason: "already up to date"}
 	}

@@ -13,13 +13,13 @@ func main() {
 
 	workers := 20
 	jobs := 50
-	
+
 	jobCh := make(chan int, jobs)
 	resCh := make(chan int, jobs)
 	var wg sync.WaitGroup
 
 	start := time.Now()
-	
+
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
 		go func(id int) {
@@ -48,10 +48,10 @@ func main() {
 	for range resCh {
 		count++
 	}
-	
+
 	elapsed := time.Since(start)
 	fmt.Printf("\nProcessed %d jobs in %v\n", count, elapsed)
-	fmt.Printf("Expected ~%v with %d workers (serial would be ~%v)\n", 
+	fmt.Printf("Expected ~%v with %d workers (serial would be ~%v)\n",
 		time.Duration(jobs)*100*time.Millisecond/time.Duration(workers),
 		workers,
 		time.Duration(jobs)*100*time.Millisecond)

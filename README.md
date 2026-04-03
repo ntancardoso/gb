@@ -8,11 +8,12 @@ A fast CLI tool for executing git and shell commands across multiple repositorie
 
 - Run any git or shell command across all repos at once
 - Switch all repos to the same branch in parallel, falling back to a default if the branch doesn't exist
-- Soft reset, hard reset, or rebase all repos to match `origin/<branch>`
+- Soft reset, hard reset, or rebase all repos to match `<remote>/<branch>`
 - List current branches across all repos
 - Recursively discovers git repos in subdirectories
 - Configurable worker pool for parallel execution
 - Exclude or include specific directories and branches
+- Worktree management: create, remove, list, and open worktrees across all repos
 
 ## Installation
 
@@ -102,10 +103,12 @@ gb -sh "pwd"             # Print working directory
 
 **Switch all repositories to a branch:**
 ```bash
-gb 15.0
 gb main
+gb 15.0
 gb feature-branch
+gb feature-branch -r upstream  # fetch from upstream if branch not found locally
 ```
+If the branch doesn't exist locally, gb fetches it from the remote (default: `origin`) and creates a local tracking branch.
 
 **List all current branches:**
 ```bash
@@ -125,33 +128,48 @@ gb -v              # Short form
 gb --version       # Long form
 ```
 
-### Sync from Origin
+### Sync from Remote
 
-Sync all repos to match a branch on `origin` across your entire workspace at once.
+Sync all repos to match a branch on a remote across your entire workspace at once. The default remote is `origin`; use `-r` to target a different one.
 
-All three modes share the same pre-checks: repos are auto-switched to the target branch first (fetching from origin if needed). Repos are **skipped** (not failed) when the branch doesn't exist on origin, there is no origin remote, HEAD is detached, or the repo is already up to date.
+All three modes share the same pre-checks: repos are auto-switched to the target branch first (fetching from the remote if needed). Repos are **skipped** (not failed) when the branch doesn't exist on the remote, there is no matching remote, HEAD is detached, or the repo is already up to date.
 
-**Soft reset** — move HEAD to `origin/<branch>`, keep working tree and index intact:
+**Soft reset** — move HEAD to `<remote>/<branch>`, keep working tree and index intact:
 ```bash
-gb -rs main              # Short form
+gb -rs main              # Soft reset to origin/main
 gb --reset-soft main     # Long form
 gb -rs feature/xyz       # Works with any branch name
+gb -rs main -r upstream  # Use a different remote
+gb -rs upstream/main     # Inline remote prefix (equivalent)
 ```
 Safe for CI/non-interactive use. If a repo has staged changes before the reset, a warning is noted in the log output.
 
-**Hard reset** — discard all local changes and reset to `origin/<branch>`:
+**Hard reset** — discard all local changes and reset to `<remote>/<branch>`:
 ```bash
 gb -rh main              # Short form
 gb --reset-hard main     # Long form
+gb -rh main -r upstream  # Hard reset to upstream/main
 ```
 > **Destructive.** Requires an interactive terminal. Before executing, gb scans all repos for dirty state and shows a confirmation prompt listing any repos whose changes will be discarded. Repos that are mid-merge, mid-cherry-pick, or mid-revert are automatically skipped.
 
-**Rebase** — rebase local commits onto `origin/<branch>`:
+**Rebase** — rebase local commits onto `<remote>/<branch>`:
 ```bash
 gb -rb develop           # Short form
 gb --rebase develop      # Long form
+gb -rb develop -r upstream  # Rebase onto upstream/develop
 ```
 > **Requires interactive terminal.** If a conflict occurs in any repo, `git rebase --abort` is run automatically to restore a clean state; the repo is reported as failed.
+
+**Inline remote prefix (reset/rebase only):**
+
+For reset and rebase, instead of `-r <remote>`, you can prefix the branch argument with the remote name. The prefix is validated against the repo's actual remotes, so branch names containing `/` (e.g. `feat/x`) are handled correctly.
+
+| Command | Equivalent to |
+|---------|--------------|
+| `gb -rs origin/main` | `gb -rs main` |
+| `gb -rs upstream/main` | `gb -rs main -r upstream` |
+| `gb -rs origin/feat/x` | `gb -rs feat/x` |
+| `gb -rs feat/x` | `gb -rs feat/x -r origin` |
 
 **CI / non-interactive use:**
 ```bash
@@ -162,6 +180,21 @@ gb -rs main
 # gb -rh main
 # gb -rb main
 ```
+
+### Worktree Commands
+
+Manage git worktrees across all repos simultaneously.
+
+```bash
+gb -wl                           # List all active worktrees
+gb -wc feature/my-task           # Create worktrees branching from master
+gb -wc feature/my-task develop   # Create worktrees branching from develop
+gb -wr feature/my-task           # Remove worktrees for the branch
+gb -wo feature/my-task           # Print worktree paths (for scripting)
+gb -l -iw                        # Include worktree repos in branch listing
+```
+
+By default, worktree repos are excluded from all operations. Use `-iw` / `--include-worktrees` to include them.
 
 ### Advanced Options
 
@@ -210,30 +243,46 @@ Options:
   -ps, --size int         Number of repos to display per page (default 20)
   -e, --excludeDirs string   Comma-separated list of directories to exclude from execution
   -i, --includeDirs string   Comma-separated list of directories to include in execution
-  -rs, --reset-soft string   Soft reset all repos to origin/<branch>
-  -rh, --reset-hard string   Hard reset all repos to origin/<branch> (destructive, confirms first)
-  -rb, --rebase string       Rebase all repos onto origin/<branch> (confirms first)
+  -rs, --reset-soft string   Soft reset all repos to <remote>/<branch>
+  -rh, --reset-hard string   Hard reset all repos to <remote>/<branch> (destructive, confirms first)
+  -rb, --rebase string       Rebase all repos onto <remote>/<branch> (confirms first)
+  -r, --remote string        Remote name to use when fetching (switch, reset, rebase) (default: origin)
   -ib, --includeBranches string
                              Only operate on repos currently on these branches (comma-separated)
   -eb, --excludeBranches string
                              Exclude repos currently on these branches (comma-separated)
+  -iw, --include-worktrees   Include worktree repos in operations (default: excluded)
+
+Worktree Commands:
+  -wl, --worktree-list              List all active worktrees across all repos
+  -wc, --worktree-create string     Create worktrees for <branch> (optional base as positional arg, default master)
+  -wr, --worktree-remove string     Remove worktrees for <branch> across all repos
+  -wo, --worktree-open string       Print worktree paths for <branch> across all repos
 
 Examples:
-  gb -c "status"               Execute 'git status' in all repositories
-  gb --cmd "fetch origin"      Execute 'git fetch origin' in all repositories
-  gb -sh "ls -la"              Execute 'ls -la' shell command in all repositories
-  gb --shell "mkdir tmp"       Execute 'mkdir tmp' shell command in all repositories
   gb main                      Switch all repos to main branch
   gb -l                        List all current branches
   gb -w 50 -l                  Fast branch listing with 50 workers
   gb --workers 5 main          Switch with 5 concurrent workers
   gb -e "build,temp" -l        List branches, excluding build and temp directories
   gb -i "vendor,dist" 15.0     Include normally excluded directories
+  gb -c "status"               Execute 'git status' in all repositories
+  gb --cmd "fetch origin"      Execute 'git fetch origin' in all repositories
+  gb -sh "ls -la"              Execute 'ls -la' shell command in all repositories
+  gb --shell "mkdir tmp"       Execute 'mkdir tmp' shell command in all repositories
   gb -rs main                  Soft reset all repos to origin/main
+  gb -rs main -r upstream      Soft reset all repos to upstream/main
+  gb -rs upstream/main         Soft reset all repos to upstream/main (inline remote)
   gb -rh feature/xyz           Hard reset all repos to origin/feature/xyz (with confirmation)
   gb -rb develop               Rebase all repos onto origin/develop (with confirmation)
   gb -ib main -l               List branches, only repos currently on main
   gb -eb main -c "fetch origin" Fetch in all repos except those on main
+  gb -l -iw                    List branches including worktree repos
+  gb -wl                       List all worktrees across repos
+  gb -wc feature/my-task       Create worktrees for feature/my-task (base: master)
+  gb -wc feature/my-task main  Create worktrees branching from main
+  gb -wo feature/my-task       Print worktree paths for feature/my-task
+  gb -wr feature/my-task       Remove worktrees for feature/my-task
 ```
 
 ## Default Excluded Directories
@@ -290,6 +339,10 @@ Or keep local changes staged instead:
 ```bash
 gb -rs 15.0
 ```
+Or sync from a different remote:
+```bash
+gb -rs 15.0 -r upstream
+```
 
 6. **Check status across all repos:**
 ```bash
@@ -303,7 +356,7 @@ gb -c "status"
 - **Permission issues**: Handles repository access problems gracefully
 - **Network issues**: Manages remote fetch failures appropriately
 - **Command execution failures**: Shows detailed error messages with log review option
-- **Sync: branch not on origin**: Repo is skipped (not failed); counted separately in summary
+- **Sync: branch not on remote**: Repo is skipped (not failed); counted separately in summary
 - **Sync: dirty state warning (soft reset)**: Repos with staged changes before a soft reset log a warning in the output; the reset still proceeds
 - **Sync: hard reset with local changes**: Pre-flight scan lists all affected repos before the confirmation prompt; user can abort cleanly
 - **Sync: rebase conflict**: `git rebase --abort` is run automatically; repo is reported as failed with clean state restored

@@ -63,7 +63,7 @@ func TestFindGitRepos(t *testing.T) {
 	createDir(t, filepath.Join(tmpDir, "notgit"))
 	createGitRepo(t, filepath.Join(tmpDir, "vendor", "repo3"))
 
-	cfg := newConfig(defaultExcludeDirs, nil, nil, nil, 20, false)
+	cfg := newConfig(defaultExcludeDirs, nil, nil, nil, 20, false, "origin")
 	repos, err := findGitRepos(tmpDir, cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -105,7 +105,7 @@ func TestListAllBranches(t *testing.T) {
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	cfg := newConfig(defaultExcludeDirs, nil, nil, nil, 20, false)
+	cfg := newConfig(defaultExcludeDirs, nil, nil, nil, 20, false, "origin")
 	listAllBranches(tmpDir, 2, cfg)
 
 	_ = w.Close()
@@ -133,7 +133,7 @@ func TestSwitchBranches(t *testing.T) {
 
 	runCmd(t, repo1, "git", "checkout", "main")
 
-	cfg := newConfig(defaultExcludeDirs, nil, nil, nil, 20, false)
+	cfg := newConfig(defaultExcludeDirs, nil, nil, nil, 20, false, "origin")
 	switchBranches(tmpDir, "feature", 1, cfg)
 
 	branch, err := getBranch(repo1)
@@ -150,11 +150,11 @@ func TestProcessSingleRepo(t *testing.T) {
 	createGitRepo(t, tmpDir)
 
 	repo := RepoInfo{Path: tmpDir, RelPath: "test"}
-	result := processSingleRepo(repo, "main", nil)
+	result := processSingleRepo(repo, "main", "origin", nil)
 	if result.Success {
 		branch, _ := getBranch(tmpDir)
 		if branch != "main" && branch != "master" {
-			result = processSingleRepo(repo, "master", nil)
+			result = processSingleRepo(repo, "master", "origin", nil)
 		}
 	}
 
@@ -162,7 +162,7 @@ func TestProcessSingleRepo(t *testing.T) {
 		t.Errorf("expected success, got error: %s", result.Error)
 	}
 
-	result = processSingleRepo(repo, "nonexistent", nil)
+	result = processSingleRepo(repo, "nonexistent", "origin", nil)
 	if result.Success {
 		t.Error("expected failure for non-existent branch")
 	}
@@ -184,7 +184,7 @@ func TestExecuteCommandInRepos(t *testing.T) {
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	cfg := newConfig(defaultExcludeDirs, nil, nil, nil, 20, false)
+	cfg := newConfig(defaultExcludeDirs, nil, nil, nil, 20, false, "origin")
 	executeCommandInRepos(tmpDir, "status", 2, cfg)
 
 	_ = w.Close()
@@ -253,7 +253,7 @@ func TestExecuteShellInRepos(t *testing.T) {
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	cfg := newConfig(defaultExcludeDirs, nil, nil, nil, 20, false)
+	cfg := newConfig(defaultExcludeDirs, nil, nil, nil, 20, false, "origin")
 	executeShellInRepos(tmpDir, "echo test", 2, cfg)
 
 	_ = w.Close()
@@ -299,7 +299,7 @@ func TestRun(t *testing.T) {
 
 func TestConfigExcludeSet(t *testing.T) {
 	dirs := []string{"node_modules", "vendor", ".git"}
-	cfg := newConfig(dirs, nil, nil, nil, 20, false)
+	cfg := newConfig(dirs, nil, nil, nil, 20, false, "origin")
 
 	if len(cfg.excludeSet) != 3 {
 		t.Errorf("expected 3 items, got %d", len(cfg.excludeSet))
@@ -311,7 +311,7 @@ func TestConfigExcludeSet(t *testing.T) {
 }
 
 func TestConfigShouldExcludeDir(t *testing.T) {
-	cfg := newConfig(defaultExcludeDirs, []string{"vendor"}, nil, nil, 20, false)
+	cfg := newConfig(defaultExcludeDirs, []string{"vendor"}, nil, nil, 20, false, "origin")
 
 	if !cfg.shouldExcludeDir(".hidden") {
 		t.Error("should exclude .hidden")
@@ -445,7 +445,7 @@ func TestShouldExecuteInRepo(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := newConfig(tt.excludeDirs, tt.includeDirs, nil, nil, 20, false)
+			cfg := newConfig(tt.excludeDirs, tt.includeDirs, nil, nil, 20, false, "origin")
 			result := cfg.shouldExecuteInRepo(tt.repoPath)
 			if result != tt.expected {
 				t.Errorf("shouldExecuteInRepo() = %v, expected %v", result, tt.expected)
@@ -573,7 +573,7 @@ func TestFilterWorktrees(t *testing.T) {
 	}
 
 	t.Run("excludes worktrees by default", func(t *testing.T) {
-		cfg := newConfig(nil, nil, nil, nil, 20, false)
+		cfg := newConfig(nil, nil, nil, nil, 20, false, "origin")
 		filtered := cfg.filterWorktrees(repos)
 		if len(filtered) != 2 {
 			t.Fatalf("expected 2 repos, got %d", len(filtered))
@@ -586,7 +586,7 @@ func TestFilterWorktrees(t *testing.T) {
 	})
 
 	t.Run("includes worktrees when flag set", func(t *testing.T) {
-		cfg := newConfig(nil, nil, nil, nil, 20, true)
+		cfg := newConfig(nil, nil, nil, nil, 20, true, "origin")
 		filtered := cfg.filterWorktrees(repos)
 		if len(filtered) != 4 {
 			t.Fatalf("expected 4 repos, got %d", len(filtered))
@@ -608,7 +608,7 @@ func TestIsWorktreeDetection(t *testing.T) {
 	wtPath := filepath.Join(tmpDir, "linked-wt")
 	runCmd(t, mainRepo, "git", "worktree", "add", wtPath, "wt-branch")
 
-	cfg := newConfig(defaultExcludeDirs, nil, nil, nil, 20, false)
+	cfg := newConfig(defaultExcludeDirs, nil, nil, nil, 20, false, "origin")
 	repos, err := findGitRepos(tmpDir, cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -678,7 +678,7 @@ func TestProcessSingleRepoSkipsLockedBranch(t *testing.T) {
 	runCmd(t, mainRepo, "git", "worktree", "add", wtPath, "locked-branch")
 
 	repo := RepoInfo{Path: mainRepo, RelPath: "repo"}
-	result := processSingleRepo(repo, "locked-branch", nil)
+	result := processSingleRepo(repo, "locked-branch", "origin", nil)
 
 	if !result.Skipped {
 		t.Error("expected result to be skipped when branch is locked in worktree")
@@ -740,7 +740,7 @@ func TestFilterReposForExecution(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := newConfig(tt.excludeDirs, tt.includeDirs, nil, nil, 20, false)
+			cfg := newConfig(tt.excludeDirs, tt.includeDirs, nil, nil, 20, false, "origin")
 			filtered := cfg.filterReposForExecution(repos)
 
 			if len(filtered) != tt.expectedCount {

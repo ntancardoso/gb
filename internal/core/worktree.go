@@ -7,14 +7,17 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 )
 
 // worktreePath returns the path where a worktree for the given branch should live.
-// Convention: <parent-of-repo>/worktrees/<branch>/<repo-basename>
-// This is unique per repo even when multiple repos share the same parent directory.
+// Convention: <parent-of-repo>/<repo-basename>-<branch-suffix>
+// branch-suffix is the last path component of the branch name (e.g. "feat/abc" → "abc").
 func worktreePath(repoPath, branch string) string {
-	return filepath.Join(filepath.Dir(repoPath), "worktrees", branch, filepath.Base(repoPath))
+	parts := strings.Split(branch, "/")
+	suffix := parts[len(parts)-1]
+	return filepath.Join(filepath.Dir(repoPath), filepath.Base(repoPath)+"-"+suffix)
 }
 
 func worktreeListAll(root string, workers int, cfg *Config) {
@@ -149,9 +152,15 @@ func worktreeCreate(root, branch, base string, workers int, cfg *Config) {
 				// Create branch from base if it doesn't exist locally.
 				if _, _, err2 := executeGitCommandWithRetry(context.Background(), r.Path, "show-ref", "--verify", "--quiet", "refs/heads/"+branch); err2 != nil {
 					_, _ = fmt.Fprintf(out, "Creating branch '%s' from '%s'...\n", branch, base)
-					if _, _, err3 := executeGitCommandWithRetry(context.Background(), r.Path, "branch", branch, base); err3 != nil {
+					gitOut, _, err3 := executeGitCommandWithRetry(context.Background(), r.Path, "branch", branch, base)
+					if err3 != nil && !strings.Contains(base, "/") {
+						// base may only exist as a remote-tracking ref; retry with remote prefix
+						gitOut, _, err3 = executeGitCommandWithRetry(context.Background(), r.Path, "branch", branch, cfg.Remote+"/"+base)
+					}
+					if err3 != nil {
+						_, _ = fmt.Fprintf(out, "%s", gitOut)
 						_, _ = fmt.Fprintf(out, "Failed to create branch: %v\n", err3)
-						progress.UpdateStatus(r.RelPath, statusFailed, "branch creation failed")
+						progress.UpdateStatus(r.RelPath, statusFailed, fmt.Sprintf("base '%s' not found", base))
 						if logFile != nil {
 							_ = logFile.Close()
 						}
@@ -169,8 +178,9 @@ func worktreeCreate(root, branch, base string, workers int, cfg *Config) {
 					continue
 				}
 
-				if _, _, err3 := executeGitCommandWithRetry(context.Background(), r.Path, "worktree", "add", wtPath, branch); err3 != nil {
+				if gitOut, _, err3 := executeGitCommandWithRetry(context.Background(), r.Path, "worktree", "add", wtPath, branch); err3 != nil {
 					cmdErr = err3
+					_, _ = fmt.Fprintf(out, "%s", gitOut)
 					_, _ = fmt.Fprintf(out, "git worktree add failed: %v\n", err3)
 				} else {
 					// Copy .env if present.
@@ -287,6 +297,14 @@ func worktreeRemove(root, branch string, workers int, cfg *Config) {
 
 				wtPath := worktreePath(r.Path, branch)
 
+				// If branch-derived path doesn't exist, try treating input as a directory name.
+				if _, statErr := os.Stat(wtPath); statErr != nil {
+					altPath := filepath.Join(filepath.Dir(r.Path), branch)
+					if _, altErr := os.Stat(altPath); altErr == nil {
+						wtPath = altPath
+					}
+				}
+
 				if _, statErr := os.Stat(wtPath); statErr != nil {
 					_, _ = fmt.Fprintf(out, "No worktree found at %s, skipping\n", wtPath)
 					progress.UpdateStatus(r.RelPath, statusSkipped, "no worktree found")
@@ -297,8 +315,9 @@ func worktreeRemove(root, branch string, workers int, cfg *Config) {
 					continue
 				}
 
-				_, _, cmdErr := executeGitCommandWithRetry(context.Background(), r.Path, "worktree", "remove", wtPath)
+				gitOut, _, cmdErr := executeGitCommandWithRetry(context.Background(), r.Path, "worktree", "remove", wtPath)
 				if cmdErr != nil {
+					_, _ = fmt.Fprintf(out, "%s", gitOut)
 					_, _ = fmt.Fprintf(out, "git worktree remove failed: %v\n", cmdErr)
 				} else {
 					_, _ = fmt.Fprintf(out, "Removed worktree: %s\n", wtPath)

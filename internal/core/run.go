@@ -30,9 +30,10 @@ type Config struct {
 	includeBranchSet map[string]struct{}
 	PageSize         int
 	IncludeWorktrees bool
+	Remote           string
 }
 
-func newConfig(excludeDirs, includeDirs, excludeBranches, includeBranches []string, pageSize int, includeWorktrees bool) *Config {
+func newConfig(excludeDirs, includeDirs, excludeBranches, includeBranches []string, pageSize int, includeWorktrees bool, remote string) *Config {
 	cfg := &Config{
 		excludeSet:       make(map[string]struct{}),
 		includeSet:       make(map[string]struct{}),
@@ -40,6 +41,7 @@ func newConfig(excludeDirs, includeDirs, excludeBranches, includeBranches []stri
 		includeBranchSet: make(map[string]struct{}),
 		PageSize:         pageSize,
 		IncludeWorktrees: includeWorktrees,
+		Remote:           remote,
 	}
 
 	for _, dir := range includeDirs {
@@ -211,14 +213,14 @@ func Run(args []string) error {
 	showVersion := fs.Bool("version", false, "Show version information")
 	fs.BoolVar(showVersion, "v", false, "Show version (shorthand)")
 
-	resetSoft := fs.String("reset-soft", "", "Soft reset all repos to origin/<branch>")
-	fs.StringVar(resetSoft, "rs", "", "Soft reset to origin/<branch> (shorthand)")
+	resetSoft := fs.String("reset-soft", "", "Soft reset all repos to <remote>/<branch>")
+	fs.StringVar(resetSoft, "rs", "", "Soft reset to <remote>/<branch> (shorthand)")
 
-	resetHard := fs.String("reset-hard", "", "Hard reset all repos to origin/<branch> (destructive, confirms first)")
-	fs.StringVar(resetHard, "rh", "", "Hard reset to origin/<branch> (shorthand)")
+	resetHard := fs.String("reset-hard", "", "Hard reset all repos to <remote>/<branch> (destructive, confirms first)")
+	fs.StringVar(resetHard, "rh", "", "Hard reset to <remote>/<branch> (shorthand)")
 
-	rebaseBranch := fs.String("rebase", "", "Rebase all repos onto origin/<branch> (confirms first)")
-	fs.StringVar(rebaseBranch, "rb", "", "Rebase onto origin/<branch> (shorthand)")
+	rebaseBranch := fs.String("rebase", "", "Rebase all repos onto <remote>/<branch> (confirms first)")
+	fs.StringVar(rebaseBranch, "rb", "", "Rebase onto <remote>/<branch> (shorthand)")
 
 	includeWorktrees := fs.Bool("include-worktrees", false, "Include worktree repos in operations (default: excluded)")
 	fs.BoolVar(includeWorktrees, "iw", false, "Include worktree repos (shorthand)")
@@ -228,6 +230,9 @@ func Run(args []string) error {
 
 	wtRemove := fs.String("worktree-remove", "", "Remove worktrees for <branch> across all repos")
 	fs.StringVar(wtRemove, "wr", "", "Remove worktrees (shorthand)")
+
+	remoteName := fs.String("remote", "origin", "Remote name to use for fetch/rebase/reset (default: origin)")
+	fs.StringVar(remoteName, "r", "origin", "Remote name (shorthand)")
 
 	wtList := fs.Bool("worktree-list", false, "List all active worktrees across all repos")
 	fs.BoolVar(wtList, "wl", false, "List worktrees (shorthand)")
@@ -248,13 +253,14 @@ func Run(args []string) error {
 		fmt.Println("  -e, --excludeDirs string   Comma-separated list of directories to exclude from execution")
 		fmt.Println("  -i, --includeDirs string")
 		fmt.Println("                          Comma-separated list of directories to include in execution")
-		fmt.Println("  -rs, --reset-soft string  Soft reset all repos to origin/<branch>")
-		fmt.Println("  -rh, --reset-hard string  Hard reset all repos to origin/<branch> (destructive, confirms first)")
-		fmt.Println("  -rb, --rebase string      Rebase all repos onto origin/<branch> (confirms first)")
+		fmt.Println("  -rs, --reset-soft string  Soft reset all repos to <remote>/<branch>")
+		fmt.Println("  -rh, --reset-hard string  Hard reset all repos to <remote>/<branch> (destructive, confirms first)")
+		fmt.Println("  -rb, --rebase string      Rebase all repos onto <remote>/<branch> (confirms first)")
 		fmt.Println("  -ib, --includeBranches string")
 		fmt.Println("                            Only operate on repos currently on these branches (comma-separated)")
 		fmt.Println("  -eb, --excludeBranches string")
 		fmt.Println("                            Exclude repos currently on these branches (comma-separated)")
+		fmt.Println("  -r, --remote string         Remote name to use for fetch/rebase/reset (default: origin)")
 		fmt.Println("  -iw, --include-worktrees  Include worktree repos in operations (default: excluded)")
 		fmt.Println("\nWorktree Commands:")
 		fmt.Println("  -wl, --worktree-list              List all active worktrees across all repos")
@@ -278,6 +284,7 @@ func Run(args []string) error {
 		fmt.Println("  gb -rs main              Soft reset all repos to origin/main")
 		fmt.Println("  gb -rh feature/xyz       Hard reset all repos to origin/feature/xyz (with confirmation)")
 		fmt.Println("  gb -rb develop           Rebase all repos onto origin/develop (with confirmation)")
+		fmt.Println("  gb -rs main -r upstream  Soft reset all repos to upstream/main")
 		fmt.Println("  gb -ib main -l           List branches, only repos currently on main")
 		fmt.Println("  gb -eb main -c \"fetch origin\"  Fetch in all repos except those on main")
 		fmt.Println("  gb -ib develop -c \"status\"     Git status only in repos on develop")
@@ -306,7 +313,7 @@ func Run(args []string) error {
 	excludeBranches := parseCommaSeparated(*excludeBranchesFlag, nil)
 	includeBranches := parseCommaSeparated(*includeBranchesFlag, nil)
 
-	cfg := newConfig(excludeDirs, includeDirs, excludeBranches, includeBranches, *pageSize, *includeWorktrees)
+	cfg := newConfig(excludeDirs, includeDirs, excludeBranches, includeBranches, *pageSize, *includeWorktrees, *remoteName)
 
 	root, _ := os.Getwd()
 	root = resolveRoot(root)

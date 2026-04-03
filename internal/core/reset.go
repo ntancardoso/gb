@@ -28,6 +28,7 @@ type repoPreflightInfo struct {
 }
 
 func syncBranch(root, branch, mode string, workers int, cfg *Config) {
+	remote := cfg.Remote
 	allRepos, err := findGitRepos(root, cfg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)
@@ -61,13 +62,13 @@ func syncBranch(root, branch, mode string, workers int, cfg *Config) {
 		}
 
 		dirtyRepos := preflightScan(repos, workers)
-		if !PromptConfirmDestructive(operationDescription(mode, branch), len(repos), dirtyRepos) {
+		if !PromptConfirmDestructive(operationDescription(mode, branch, remote), len(repos), dirtyRepos) {
 			fmt.Println("Aborted.")
 			return
 		}
 	}
 
-	opDesc := operationDescription(mode, branch)
+	opDesc := operationDescription(mode, branch, remote)
 	fmt.Println(StyleInfo.Render(fmt.Sprintf("Found %d repos (filtered from %d discovered), running '%s' with %d workers...",
 		len(repos), len(allRepos), opDesc, min(workers, len(repos)))))
 
@@ -97,7 +98,7 @@ func syncBranch(root, branch, mode string, workers int, cfg *Config) {
 					logFile = nil
 				}
 
-				res := processSingleReset(r, branch, mode, logFile)
+				res := processSingleReset(r, branch, mode, remote, logFile)
 
 				if logFile != nil {
 					_ = logFile.Close()
@@ -179,14 +180,14 @@ func syncBranch(root, branch, mode string, workers int, cfg *Config) {
 	}
 }
 
-func operationDescription(mode, branch string) string {
+func operationDescription(mode, branch, remote string) string {
 	switch mode {
 	case "soft":
-		return fmt.Sprintf("git reset --soft origin/%s", branch)
+		return fmt.Sprintf("git reset --soft %s/%s", remote, branch)
 	case "hard":
-		return fmt.Sprintf("git reset --hard origin/%s", branch)
+		return fmt.Sprintf("git reset --hard %s/%s", remote, branch)
 	case "rebase":
-		return fmt.Sprintf("git rebase origin/%s", branch)
+		return fmt.Sprintf("git rebase %s/%s", remote, branch)
 	}
 	return "unknown operation"
 }
@@ -266,19 +267,20 @@ func getDirtyStatus(dir string) string {
 	return "changes"
 }
 
-func processSingleReset(repo RepoInfo, branch, mode string, logFile *os.File) ResetResult {
+func processSingleReset(repo RepoInfo, branch, mode, remote string, logFile *os.File) ResetResult {
 	log := func(format string, args ...interface{}) {
 		if logFile != nil {
 			_, _ = fmt.Fprintf(logFile, format+"\n", args...)
 		}
 	}
 
+	remote, branch = resolveRemoteAndBranch(repo.Path, branch, remote)
 	log("=== Processing %s ===", repo.RelPath)
-	log("Target branch: %s, Mode: %s", branch, mode)
+	log("Target branch: %s, Mode: %s, Remote: %s", branch, mode, remote)
 
-	if !checkOriginExists(repo.Path) {
-		log("Skipping: no origin remote")
-		return ResetResult{RelPath: repo.RelPath, Skipped: true, SkipReason: "no origin remote"}
+	if !checkRemoteExists(repo.Path, remote) {
+		log("Skipping: no %s remote", remote)
+		return ResetResult{RelPath: repo.RelPath, Skipped: true, SkipReason: "no " + remote + " remote"}
 	}
 
 	if !checkHasCommits(repo.Path) {
@@ -291,61 +293,46 @@ func processSingleReset(repo RepoInfo, branch, mode string, logFile *os.File) Re
 		return ResetResult{RelPath: repo.RelPath, Skipped: true, SkipReason: "detached HEAD"}
 	}
 
-	found, netErr := checkBranchOnOrigin(repo.Path, branch)
+	found, netErr := checkBranchOnRemote(repo.Path, branch, remote)
 	if netErr != nil {
 		log("Error checking remote branch: %v", netErr)
 		return ResetResult{RelPath: repo.RelPath, Success: false, Error: fmt.Sprintf("network error: %v", netErr)}
 	}
 	if !found {
-		log("Skipping: branch not on origin")
-		return ResetResult{RelPath: repo.RelPath, Skipped: true, SkipReason: "branch not on origin"}
+		log("Skipping: branch not on %s", remote)
+		return ResetResult{RelPath: repo.RelPath, Skipped: true, SkipReason: "branch not on " + remote}
 	}
 
-	currentBranch, err := getCurrentBranch(repo.Path)
-	if err != nil {
-		log("Error getting current branch: %v", err)
-		return ResetResult{RelPath: repo.RelPath, Success: false, Error: "failed to get current branch"}
+	log("Fetching to update %s/%s ref", remote, branch)
+	if fetchErr := fetchBranchFromRemote(repo.Path, branch, remote, logFile); fetchErr != nil {
+		log("Fetch failed: %v", fetchErr)
+		return ResetResult{RelPath: repo.RelPath, Success: false, Error: "fetch failed"}
 	}
 
-	if currentBranch != branch {
-		log("Switching from %s to %s", currentBranch, branch)
-		if switchErr := switchToTargetBranch(repo, branch, logFile); switchErr != nil {
-			log("Switch failed: %v", switchErr)
-			return ResetResult{RelPath: repo.RelPath, Success: false, Error: fmt.Sprintf("switch to %s failed", branch)}
-		}
-	} else {
-		// Already on target branch — fetch to update the origin/<branch> ref.
-		log("Already on %s, fetching to update origin/%s ref", branch, branch)
-		if fetchErr := fetchBranchFromOrigin(repo.Path, branch, logFile); fetchErr != nil {
-			log("Fetch failed: %v", fetchErr)
-			return ResetResult{RelPath: repo.RelPath, Success: false, Error: "fetch failed"}
-		}
-	}
-
-	if checkAlreadyAtTarget(repo.Path, branch) {
+	if mode == "soft" && checkAlreadyAtTarget(repo.Path, branch, remote) {
 		log("Skipping: already up to date")
 		return ResetResult{RelPath: repo.RelPath, Skipped: true, SkipReason: "already up to date"}
 	}
 
 	switch mode {
 	case "hard":
-		return doHardReset(repo, branch, logFile, log)
+		return doHardReset(repo, branch, remote, logFile, log)
 	case "soft":
-		return doSoftReset(repo, branch, logFile, log)
+		return doSoftReset(repo, branch, remote, logFile, log)
 	case "rebase":
-		return doRebase(repo, branch, logFile, log)
+		return doRebase(repo, branch, remote, logFile, log)
 	}
 	return ResetResult{RelPath: repo.RelPath, Success: false, Error: "unknown mode"}
 }
 
-func doHardReset(repo RepoInfo, branch string, logFile *os.File, log func(string, ...interface{})) ResetResult {
+func doHardReset(repo RepoInfo, branch, remote string, logFile *os.File, log func(string, ...interface{})) ResetResult {
 	if inProgress, opName := checkMidOperation(repo.Path); inProgress {
 		log("Skipping: mid-%s operation in progress", opName)
 		return ResetResult{RelPath: repo.RelPath, Skipped: true, SkipReason: fmt.Sprintf("mid-%s in progress", opName)}
 	}
 
-	log("Executing: git reset --hard origin/%s", branch)
-	cmd := exec.Command("git", "reset", "--hard", "origin/"+branch)
+	log("Executing: git reset --hard %s/%s", remote, branch)
+	cmd := exec.Command("git", "reset", "--hard", remote+"/"+branch)
 	cmd.Dir = repo.Path
 	if logFile != nil {
 		cmd.Stdout = logFile
@@ -359,7 +346,7 @@ func doHardReset(repo RepoInfo, branch string, logFile *os.File, log func(string
 	return ResetResult{RelPath: repo.RelPath, Success: true}
 }
 
-func doSoftReset(repo RepoInfo, branch string, logFile *os.File, log func(string, ...interface{})) ResetResult {
+func doSoftReset(repo RepoInfo, branch, remote string, logFile *os.File, log func(string, ...interface{})) ResetResult {
 	warning := ""
 	stagedCheck := exec.Command("git", "diff", "--cached", "--quiet")
 	stagedCheck.Dir = repo.Path
@@ -368,8 +355,8 @@ func doSoftReset(repo RepoInfo, branch string, logFile *os.File, log func(string
 		log("Warning: staged changes exist; soft reset will merge staged state")
 	}
 
-	log("Executing: git reset --soft origin/%s", branch)
-	cmd := exec.Command("git", "reset", "--soft", "origin/"+branch)
+	log("Executing: git reset --soft %s/%s", remote, branch)
+	cmd := exec.Command("git", "reset", "--soft", remote+"/"+branch)
 	cmd.Dir = repo.Path
 	if logFile != nil {
 		cmd.Stdout = logFile
@@ -383,7 +370,7 @@ func doSoftReset(repo RepoInfo, branch string, logFile *os.File, log func(string
 	return ResetResult{RelPath: repo.RelPath, Success: true, Warning: warning}
 }
 
-func doRebase(repo RepoInfo, branch string, logFile *os.File, log func(string, ...interface{})) ResetResult {
+func doRebase(repo RepoInfo, branch, remote string, logFile *os.File, log func(string, ...interface{})) ResetResult {
 	if checkRebaseInProgress(repo.Path) {
 		log("Skipping: rebase already in progress")
 		return ResetResult{RelPath: repo.RelPath, Skipped: true, SkipReason: "rebase already in progress"}
@@ -394,8 +381,8 @@ func doRebase(repo RepoInfo, branch string, logFile *os.File, log func(string, .
 		return ResetResult{RelPath: repo.RelPath, Success: false, Error: "working tree must be clean"}
 	}
 
-	log("Executing: git rebase origin/%s", branch)
-	cmd := exec.Command("git", "rebase", "origin/"+branch)
+	log("Executing: git rebase %s/%s", remote, branch)
+	cmd := exec.Command("git", "rebase", remote+"/"+branch)
 	cmd.Dir = repo.Path
 	if logFile != nil {
 		cmd.Stdout = logFile
@@ -422,8 +409,38 @@ func doRebase(repo RepoInfo, branch string, logFile *os.File, log func(string, .
 
 // --- helpers ---
 
-func checkOriginExists(dir string) bool {
-	cmd := exec.Command("git", "remote", "get-url", "origin")
+// resolveRemoteAndBranch detects an inline remote prefix in branchArg
+// (e.g. "origin/main", "upstream/feat/x"). The first path component is
+// validated against the repo's actual remotes: if it matches, it becomes the
+// remote and the remainder becomes the branch. Otherwise defaultRemote and
+// the full branchArg are returned unchanged.
+//
+// Examples (repo has remotes "origin" and "upstream"):
+//
+//	("main",              "origin")  → ("origin",   "main")
+//	("origin/main",       "origin")  → ("origin",   "main")
+//	("upstream/main",     "origin")  → ("upstream", "main")
+//	("feat/branch1",      "origin")  → ("origin",   "feat/branch1")
+//	("origin/feat/x",     "origin")  → ("origin",   "feat/x")
+//	("feat/x",            "upstream")→ ("upstream", "feat/x")
+func resolveRemoteAndBranch(dir, branchArg, defaultRemote string) (remote, branch string) {
+	idx := strings.Index(branchArg, "/")
+	if idx <= 0 {
+		return defaultRemote, branchArg
+	}
+	candidate := branchArg[:idx]
+	rest := branchArg[idx+1:]
+	if rest == "" {
+		return defaultRemote, branchArg
+	}
+	if checkRemoteExists(dir, candidate) {
+		return candidate, rest
+	}
+	return defaultRemote, branchArg
+}
+
+func checkRemoteExists(dir, remote string) bool {
+	cmd := exec.Command("git", "remote", "get-url", remote)
 	cmd.Dir = dir
 	return cmd.Run() == nil
 }
@@ -444,8 +461,8 @@ func checkDetachedHEAD(dir string) bool {
 	return strings.TrimSpace(string(out)) == ""
 }
 
-func checkBranchOnOrigin(dir, branch string) (bool, error) {
-	cmd := exec.Command("git", "ls-remote", "--exit-code", "--heads", "origin", branch)
+func checkBranchOnRemote(dir, branch, remote string) (bool, error) {
+	cmd := exec.Command("git", "ls-remote", "--exit-code", "--heads", remote, branch)
 	cmd.Dir = dir
 	err := cmd.Run()
 	if err == nil {
@@ -496,7 +513,7 @@ func checkRebaseInProgress(dir string) bool {
 	return false
 }
 
-func checkAlreadyAtTarget(dir, branch string) bool {
+func checkAlreadyAtTarget(dir, branch, remote string) bool {
 	headCmd := exec.Command("git", "rev-parse", "HEAD")
 	headCmd.Dir = dir
 	headOut, err := headCmd.Output()
@@ -504,24 +521,24 @@ func checkAlreadyAtTarget(dir, branch string) bool {
 		return false
 	}
 
-	originCmd := exec.Command("git", "rev-parse", "origin/"+branch)
-	originCmd.Dir = dir
-	originOut, err := originCmd.Output()
+	remoteCmd := exec.Command("git", "rev-parse", remote+"/"+branch)
+	remoteCmd.Dir = dir
+	remoteOut, err := remoteCmd.Output()
 	if err != nil {
 		return false
 	}
 
-	return strings.TrimSpace(string(headOut)) == strings.TrimSpace(string(originOut))
+	return strings.TrimSpace(string(headOut)) == strings.TrimSpace(string(remoteOut))
 }
 
-// fetchBranchFromOrigin fetches branch from origin, respecting shallow repos.
-func fetchBranchFromOrigin(dir, branch string, logFile *os.File) error {
+// fetchBranchFromRemote fetches the named branch from the given remote, respecting shallow repos.
+func fetchBranchFromRemote(dir, branch, remote string, logFile *os.File) error {
 	checkCmd := exec.Command("git", "rev-parse", "--is-shallow-repository")
 	checkCmd.Dir = dir
 	shallowOut, shallowErr := checkCmd.Output()
 	isShallow := shallowErr == nil && strings.TrimSpace(string(shallowOut)) == "true"
 
-	args := []string{"fetch", "origin"}
+	args := []string{"fetch", remote}
 	if isShallow {
 		args = append(args, "--depth=1")
 	}
@@ -537,40 +554,4 @@ func fetchBranchFromOrigin(dir, branch string, logFile *os.File) error {
 		return fmt.Errorf("fetch failed")
 	}
 	return nil
-}
-
-// switchToTargetBranch switches the repo to branch, fetching from origin if needed.
-// Mirrors the logic in processSingleRepo (switch.go).
-func switchToTargetBranch(repo RepoInfo, branch string, logFile *os.File) error {
-	localCheck := exec.Command("git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
-	localCheck.Dir = repo.Path
-	branchExists := localCheck.Run() == nil
-
-	if !branchExists {
-		if err := fetchBranchFromOrigin(repo.Path, branch, logFile); err != nil {
-			return err
-		}
-	}
-
-	switchCmd := exec.Command("git", "switch", branch)
-	switchCmd.Dir = repo.Path
-	if logFile != nil {
-		switchCmd.Stdout = logFile
-		switchCmd.Stderr = logFile
-	}
-	if switchCmd.Run() == nil {
-		return nil
-	}
-
-	trackCmd := exec.Command("git", "switch", "-c", branch, "--track", "origin/"+branch)
-	trackCmd.Dir = repo.Path
-	if logFile != nil {
-		trackCmd.Stdout = logFile
-		trackCmd.Stderr = logFile
-	}
-	if trackCmd.Run() == nil {
-		return nil
-	}
-
-	return fmt.Errorf("switch failed")
 }

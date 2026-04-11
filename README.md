@@ -215,9 +215,17 @@ gb --excludeDirs "build,dist,temp" -c "status"  # Long form
 gb -i "vendor,node_modules" -l                # Short form
 gb --includeDirs "vendor,node_modules" --list  # Long form
 
+# Glob patterns are supported for -i and -e (*, ?, [...])
+gb -i "feat-*" -l                             # Include all directories matching feat-*
+gb -e "build-*,dist-*" -c "status"           # Exclude directories matching build-* or dist-*
+
 # Only run in repos on a specific branch
 gb -ib main -c "fetch origin"                 # Short form
 gb --includeBranches main -c "fetch origin"   # Long form
+
+# Glob patterns are supported for -ib and -eb (*, ?, [...])
+gb -ib "release/*" -c "fetch origin"          # Only repos on a release/* branch
+gb -eb "feat-*" -c "status"                   # Skip repos on any feat-* branch
 
 # Exclude repos on a specific branch
 gb -eb main -c "fetch origin"                 # Short form
@@ -242,15 +250,15 @@ Options:
   -w, --workers int       Number of concurrent workers (default 20)
   -ps, --size int         Number of repos to display per page (default 20)
   -e, --excludeDirs string   Comma-separated list of directories to exclude from execution
-  -i, --includeDirs string   Comma-separated list of directories to include in execution
+  -i, --includeDirs string   Comma-separated list of directories to include in execution (glob patterns supported: *, ?, [...])
   -rs, --reset-soft string   Soft reset all repos to <remote>/<branch>
   -rh, --reset-hard string   Hard reset all repos to <remote>/<branch> (destructive, confirms first)
   -rb, --rebase string       Rebase all repos onto <remote>/<branch> (confirms first)
   -r, --remote string        Remote name to use when fetching (switch, reset, rebase) (default: origin)
   -ib, --includeBranches string
-                             Only operate on repos currently on these branches (comma-separated)
+                             Only operate on repos currently on these branches (comma-separated, glob patterns supported)
   -eb, --excludeBranches string
-                             Exclude repos currently on these branches (comma-separated)
+                             Exclude repos currently on these branches (comma-separated, glob patterns supported)
   -iw, --include-worktrees   Include worktree repos in operations (default: excluded)
 
 Worktree Commands:

@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 )
@@ -24,16 +25,46 @@ var (
 )
 
 type Config struct {
-	excludeSet       map[string]struct{}
-	includeSet       map[string]struct{}
-	excludeBranchSet map[string]struct{}
-	includeBranchSet map[string]struct{}
-	PageSize         int
-	IncludeWorktrees bool
-	Remote           string
+	excludeSet        map[string]struct{}
+	excludePatterns   []string
+	includeSet        map[string]struct{}
+	includePatterns   []string
+	excludeBranchSet  map[string]struct{}
+	excludeBranchPats []string
+	includeBranchSet  map[string]struct{}
+	includeBranchPats []string
+	PageSize          int
+	IncludeWorktrees  bool
+	Remote            string
 }
 
-func newConfig(excludeDirs, includeDirs, excludeBranches, includeBranches []string, pageSize int, includeWorktrees bool, remote string) *Config {
+func hasGlobMeta(s string) bool {
+	return strings.ContainsAny(s, "*?[")
+}
+
+func matchesGlob(pattern, slashPath string) bool {
+	if matched, _ := path.Match(pattern, slashPath); matched {
+		return true
+	}
+	segments := strings.Split(slashPath, "/")
+	if strings.Contains(pattern, "/") {
+		for i := 1; i <= len(segments); i++ {
+			prefix := strings.Join(segments[:i], "/")
+			if matched, _ := path.Match(pattern, prefix); matched {
+				return true
+			}
+		}
+	} else {
+		for _, seg := range segments {
+			if matched, _ := path.Match(pattern, seg); matched {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func newConfig(excludeDirs, includeDirs, excludeBranches, includeBranches []string, pageSize int, includeWorktrees bool, remote string) (*Config, error) {
 	cfg := &Config{
 		excludeSet:       make(map[string]struct{}),
 		includeSet:       make(map[string]struct{}),
@@ -45,53 +76,95 @@ func newConfig(excludeDirs, includeDirs, excludeBranches, includeBranches []stri
 	}
 
 	for _, dir := range includeDirs {
-		cfg.includeSet[dir] = struct{}{}
+		if hasGlobMeta(dir) {
+			if _, err := path.Match(dir, ""); err != nil {
+				return nil, fmt.Errorf("invalid include pattern %q: %w", dir, err)
+			}
+			cfg.includePatterns = append(cfg.includePatterns, dir)
+		} else {
+			cfg.includeSet[dir] = struct{}{}
+		}
 	}
 
 	for _, dir := range excludeDirs {
-		if _, included := cfg.includeSet[dir]; !included {
-			cfg.excludeSet[dir] = struct{}{}
+		if hasGlobMeta(dir) {
+			if _, err := path.Match(dir, ""); err != nil {
+				return nil, fmt.Errorf("invalid exclude pattern %q: %w", dir, err)
+			}
+			cfg.excludePatterns = append(cfg.excludePatterns, dir)
+		} else {
+			if _, included := cfg.includeSet[dir]; !included {
+				cfg.excludeSet[dir] = struct{}{}
+			}
 		}
 	}
 
 	for _, b := range includeBranches {
-		cfg.includeBranchSet[b] = struct{}{}
-	}
-
-	for _, b := range excludeBranches {
-		if _, included := cfg.includeBranchSet[b]; !included {
-			cfg.excludeBranchSet[b] = struct{}{}
+		if hasGlobMeta(b) {
+			if _, err := path.Match(b, ""); err != nil {
+				return nil, fmt.Errorf("invalid include branch pattern %q: %w", b, err)
+			}
+			cfg.includeBranchPats = append(cfg.includeBranchPats, b)
+		} else {
+			cfg.includeBranchSet[b] = struct{}{}
 		}
 	}
 
-	return cfg
+	for _, b := range excludeBranches {
+		if hasGlobMeta(b) {
+			if _, err := path.Match(b, ""); err != nil {
+				return nil, fmt.Errorf("invalid exclude branch pattern %q: %w", b, err)
+			}
+			cfg.excludeBranchPats = append(cfg.excludeBranchPats, b)
+		} else {
+			if _, included := cfg.includeBranchSet[b]; !included {
+				cfg.excludeBranchSet[b] = struct{}{}
+			}
+		}
+	}
+
+	return cfg, nil
 }
 
 func (cfg *Config) shouldExecuteInBranch(branch string) bool {
-	if len(cfg.includeBranchSet) > 0 {
-		_, ok := cfg.includeBranchSet[branch]
-		return ok
+	if len(cfg.includeBranchSet) > 0 || len(cfg.includeBranchPats) > 0 {
+		if _, ok := cfg.includeBranchSet[branch]; ok {
+			return true
+		}
+		for _, pat := range cfg.includeBranchPats {
+			if matched, _ := path.Match(pat, branch); matched {
+				return true
+			}
+		}
+		return false
 	}
-	if len(cfg.excludeBranchSet) > 0 {
-		_, ok := cfg.excludeBranchSet[branch]
-		return !ok
+	if len(cfg.excludeBranchSet) > 0 || len(cfg.excludeBranchPats) > 0 {
+		if _, ok := cfg.excludeBranchSet[branch]; ok {
+			return false
+		}
+		for _, pat := range cfg.excludeBranchPats {
+			if matched, _ := path.Match(pat, branch); matched {
+				return false
+			}
+		}
+		return true
 	}
 	return true
 }
 
 func (cfg *Config) shouldExecuteInRepo(relPath string) bool {
-	if len(cfg.includeSet) > 0 {
-		return cfg.containsPath(cfg.includeSet, relPath)
+	if len(cfg.includeSet) > 0 || len(cfg.includePatterns) > 0 {
+		return cfg.containsPath(cfg.includeSet, cfg.includePatterns, relPath)
 	}
 
-	if len(cfg.excludeSet) > 0 {
-		return !cfg.containsPath(cfg.excludeSet, relPath)
+	if len(cfg.excludeSet) > 0 || len(cfg.excludePatterns) > 0 {
+		return !cfg.containsPath(cfg.excludeSet, cfg.excludePatterns, relPath)
 	}
 
 	return true
 }
 
-func (cfg *Config) containsPath(set map[string]struct{}, relPath string) bool {
+func (cfg *Config) containsPath(set map[string]struct{}, patterns []string, relPath string) bool {
 	cleanPath := filepath.Clean(relPath)
 
 	if _, exists := set[cleanPath]; exists {
@@ -100,6 +173,13 @@ func (cfg *Config) containsPath(set map[string]struct{}, relPath string) bool {
 
 	for dir := range set {
 		if cfg.isParentPath(dir, cleanPath) {
+			return true
+		}
+	}
+
+	slashPath := filepath.ToSlash(cleanPath)
+	for _, pat := range patterns {
+		if matchesGlob(pat, slashPath) {
 			return true
 		}
 	}
@@ -135,7 +215,8 @@ func (cfg *Config) filterWorktrees(repos []RepoInfo) []RepoInfo {
 }
 
 func (cfg *Config) filterReposForExecution(repos []RepoInfo) []RepoInfo {
-	if len(cfg.includeSet) == 0 && len(cfg.excludeSet) == 0 {
+	if len(cfg.includeSet) == 0 && len(cfg.excludeSet) == 0 &&
+		len(cfg.includePatterns) == 0 && len(cfg.excludePatterns) == 0 {
 		return repos
 	}
 
@@ -313,7 +394,10 @@ func Run(args []string) error {
 	excludeBranches := parseCommaSeparated(*excludeBranchesFlag, nil)
 	includeBranches := parseCommaSeparated(*includeBranchesFlag, nil)
 
-	cfg := newConfig(excludeDirs, includeDirs, excludeBranches, includeBranches, *pageSize, *includeWorktrees, *remoteName)
+	cfg, err := newConfig(excludeDirs, includeDirs, excludeBranches, includeBranches, *pageSize, *includeWorktrees, *remoteName)
+	if err != nil {
+		return err
+	}
 
 	root, _ := os.Getwd()
 	root = resolveRoot(root)

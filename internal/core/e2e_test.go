@@ -233,7 +233,7 @@ func TestE2ECustomRemoteSyncBranchViaCfg(t *testing.T) {
 	pr, pw, _ := os.Pipe()
 	os.Stdout = pw
 
-	cfg := newConfig(defaultExcludeDirs, nil, nil, nil, 20, false, "upstream")
+	cfg := mustConfig(t, defaultExcludeDirs, nil, nil, nil, 20, false, "upstream")
 	syncBranch(tmpDir, "main", "soft", 2, cfg)
 
 	_ = pw.Close()
@@ -426,7 +426,7 @@ func TestWorktreeCreateRemoteOnlyBase(t *testing.T) {
 	runCmd(t, repoDir, "git", "checkout", "--detach")
 	runCmd(t, repoDir, "git", "branch", "-D", "main")
 
-	cfg := newConfig(defaultExcludeDirs, nil, nil, nil, 20, false, "origin")
+	cfg := mustConfig(t, defaultExcludeDirs, nil, nil, nil, 20, false, "origin")
 	worktreeCreate(parentDir, "feat/my-task", "main", 2, cfg)
 
 	// Worktree must exist at the sibling path projA-my-task.

@@ -8,6 +8,15 @@ import (
 	"testing"
 )
 
+func mustConfig(t *testing.T, excludeDirs, includeDirs, excludeBranches, includeBranches []string, pageSize int, includeWorktrees bool, remote string) *Config {
+	t.Helper()
+	cfg, err := newConfig(excludeDirs, includeDirs, excludeBranches, includeBranches, pageSize, includeWorktrees, remote)
+	if err != nil {
+		t.Fatalf("newConfig: %v", err)
+	}
+	return cfg
+}
+
 func TestGetBranch(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -63,7 +72,7 @@ func TestFindGitRepos(t *testing.T) {
 	createDir(t, filepath.Join(tmpDir, "notgit"))
 	createGitRepo(t, filepath.Join(tmpDir, "vendor", "repo3"))
 
-	cfg := newConfig(defaultExcludeDirs, nil, nil, nil, 20, false, "origin")
+	cfg := mustConfig(t,defaultExcludeDirs, nil, nil, nil, 20, false, "origin")
 	repos, err := findGitRepos(tmpDir, cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -105,7 +114,7 @@ func TestListAllBranches(t *testing.T) {
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	cfg := newConfig(defaultExcludeDirs, nil, nil, nil, 20, false, "origin")
+	cfg := mustConfig(t,defaultExcludeDirs, nil, nil, nil, 20, false, "origin")
 	listAllBranches(tmpDir, 2, cfg)
 
 	_ = w.Close()
@@ -133,7 +142,7 @@ func TestSwitchBranches(t *testing.T) {
 
 	runCmd(t, repo1, "git", "checkout", "main")
 
-	cfg := newConfig(defaultExcludeDirs, nil, nil, nil, 20, false, "origin")
+	cfg := mustConfig(t,defaultExcludeDirs, nil, nil, nil, 20, false, "origin")
 	switchBranches(tmpDir, "feature", 1, cfg)
 
 	branch, err := getBranch(repo1)
@@ -184,7 +193,7 @@ func TestExecuteCommandInRepos(t *testing.T) {
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	cfg := newConfig(defaultExcludeDirs, nil, nil, nil, 20, false, "origin")
+	cfg := mustConfig(t,defaultExcludeDirs, nil, nil, nil, 20, false, "origin")
 	executeCommandInRepos(tmpDir, "status", 2, cfg)
 
 	_ = w.Close()
@@ -253,7 +262,7 @@ func TestExecuteShellInRepos(t *testing.T) {
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	cfg := newConfig(defaultExcludeDirs, nil, nil, nil, 20, false, "origin")
+	cfg := mustConfig(t,defaultExcludeDirs, nil, nil, nil, 20, false, "origin")
 	executeShellInRepos(tmpDir, "echo test", 2, cfg)
 
 	_ = w.Close()
@@ -299,7 +308,7 @@ func TestRun(t *testing.T) {
 
 func TestConfigExcludeSet(t *testing.T) {
 	dirs := []string{"node_modules", "vendor", ".git"}
-	cfg := newConfig(dirs, nil, nil, nil, 20, false, "origin")
+	cfg := mustConfig(t,dirs, nil, nil, nil, 20, false, "origin")
 
 	if len(cfg.excludeSet) != 3 {
 		t.Errorf("expected 3 items, got %d", len(cfg.excludeSet))
@@ -311,7 +320,7 @@ func TestConfigExcludeSet(t *testing.T) {
 }
 
 func TestConfigShouldExcludeDir(t *testing.T) {
-	cfg := newConfig(defaultExcludeDirs, []string{"vendor"}, nil, nil, 20, false, "origin")
+	cfg := mustConfig(t,defaultExcludeDirs, []string{"vendor"}, nil, nil, 20, false, "origin")
 
 	if !cfg.shouldExcludeDir(".hidden") {
 		t.Error("should exclude .hidden")
@@ -441,11 +450,47 @@ func TestShouldExecuteInRepo(t *testing.T) {
 			repoPath:    "vendor",
 			expected:    true,
 		},
+		{
+			name:        "include glob trailing wildcard match",
+			includeDirs: []string{"feat-*"},
+			repoPath:    "feat-foo",
+			expected:    true,
+		},
+		{
+			name:        "include glob trailing wildcard no match",
+			includeDirs: []string{"feat-*"},
+			repoPath:    "build",
+			expected:    false,
+		},
+		{
+			name:        "include glob child path match",
+			includeDirs: []string{"feat-*"},
+			repoPath:    "feat-foo/subrepo",
+			expected:    true,
+		},
+		{
+			name:        "include glob question mark",
+			includeDirs: []string{"feat?"},
+			repoPath:    "feata",
+			expected:    true,
+		},
+		{
+			name:        "exclude glob match",
+			excludeDirs: []string{"feat-*"},
+			repoPath:    "feat-foo",
+			expected:    false,
+		},
+		{
+			name:        "exclude glob no match",
+			excludeDirs: []string{"feat-*"},
+			repoPath:    "main",
+			expected:    true,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := newConfig(tt.excludeDirs, tt.includeDirs, nil, nil, 20, false, "origin")
+			cfg := mustConfig(t, tt.excludeDirs, tt.includeDirs, nil, nil, 20, false, "origin")
 			result := cfg.shouldExecuteInRepo(tt.repoPath)
 			if result != tt.expected {
 				t.Errorf("shouldExecuteInRepo() = %v, expected %v", result, tt.expected)
@@ -493,6 +538,66 @@ func TestContainsPath(t *testing.T) {
 		},
 	}
 
+	globTests := []struct {
+		name     string
+		patterns []string
+		repoPath string
+		expected bool
+	}{
+		{
+			name:     "glob trailing wildcard match",
+			patterns: []string{"feat-*"},
+			repoPath: "feat-foo",
+			expected: true,
+		},
+		{
+			name:     "glob trailing wildcard no match",
+			patterns: []string{"feat-*"},
+			repoPath: "build",
+			expected: false,
+		},
+		{
+			name:     "glob matches segment in path",
+			patterns: []string{"feat-*"},
+			repoPath: "feat-foo/subrepo",
+			expected: true,
+		},
+		{
+			name:     "glob with slash matches prefix",
+			patterns: []string{"OCA/feat-*"},
+			repoPath: "OCA/feat-foo/sub",
+			expected: true,
+		},
+		{
+			name:     "glob with slash no match",
+			patterns: []string{"OCA/feat-*"},
+			repoPath: "other/feat-foo",
+			expected: false,
+		},
+		{
+			name:     "glob question mark",
+			patterns: []string{"feat?"},
+			repoPath: "feata",
+			expected: true,
+		},
+		{
+			name:     "glob question mark no match too long",
+			patterns: []string{"feat?"},
+			repoPath: "featab",
+			expected: false,
+		},
+	}
+
+	for _, tt := range globTests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{}
+			result := cfg.containsPath(nil, tt.patterns, tt.repoPath)
+			if result != tt.expected {
+				t.Errorf("containsPath() = %v, expected %v", result, tt.expected)
+			}
+		})
+	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			set := make(map[string]struct{})
@@ -500,7 +605,7 @@ func TestContainsPath(t *testing.T) {
 				set[dir] = struct{}{}
 			}
 			cfg := &Config{}
-			result := cfg.containsPath(set, tt.repoPath)
+			result := cfg.containsPath(set, nil, tt.repoPath)
 			if result != tt.expected {
 				t.Errorf("containsPath() = %v, expected %v", result, tt.expected)
 			}
@@ -573,7 +678,7 @@ func TestFilterWorktrees(t *testing.T) {
 	}
 
 	t.Run("excludes worktrees by default", func(t *testing.T) {
-		cfg := newConfig(nil, nil, nil, nil, 20, false, "origin")
+		cfg := mustConfig(t,nil, nil, nil, nil, 20, false, "origin")
 		filtered := cfg.filterWorktrees(repos)
 		if len(filtered) != 2 {
 			t.Fatalf("expected 2 repos, got %d", len(filtered))
@@ -586,7 +691,7 @@ func TestFilterWorktrees(t *testing.T) {
 	})
 
 	t.Run("includes worktrees when flag set", func(t *testing.T) {
-		cfg := newConfig(nil, nil, nil, nil, 20, true, "origin")
+		cfg := mustConfig(t,nil, nil, nil, nil, 20, true, "origin")
 		filtered := cfg.filterWorktrees(repos)
 		if len(filtered) != 4 {
 			t.Fatalf("expected 4 repos, got %d", len(filtered))
@@ -608,7 +713,7 @@ func TestIsWorktreeDetection(t *testing.T) {
 	wtPath := filepath.Join(tmpDir, "linked-wt")
 	runCmd(t, mainRepo, "git", "worktree", "add", wtPath, "wt-branch")
 
-	cfg := newConfig(defaultExcludeDirs, nil, nil, nil, 20, false, "origin")
+	cfg := mustConfig(t,defaultExcludeDirs, nil, nil, nil, 20, false, "origin")
 	repos, err := findGitRepos(tmpDir, cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -736,11 +841,17 @@ func TestFilterReposForExecution(t *testing.T) {
 			expectedPaths: []string{},
 			expectedCount: 0,
 		},
+		{
+			name:          "include glob pattern",
+			includeDirs:   []string{"feat-*"},
+			expectedPaths: []string{},
+			expectedCount: 0,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := newConfig(tt.excludeDirs, tt.includeDirs, nil, nil, 20, false, "origin")
+			cfg := mustConfig(t, tt.excludeDirs, tt.includeDirs, nil, nil, 20, false, "origin")
 			filtered := cfg.filterReposForExecution(repos)
 
 			if len(filtered) != tt.expectedCount {
@@ -765,5 +876,107 @@ func TestFilterReposForExecution(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestShouldExecuteInBranch(t *testing.T) {
+	tests := []struct {
+		name            string
+		includeBranches []string
+		excludeBranches []string
+		branch          string
+		expected        bool
+	}{
+		{
+			name:     "no filters",
+			branch:   "main",
+			expected: true,
+		},
+		{
+			name:            "include literal match",
+			includeBranches: []string{"main"},
+			branch:          "main",
+			expected:        true,
+		},
+		{
+			name:            "include literal no match",
+			includeBranches: []string{"main"},
+			branch:          "develop",
+			expected:        false,
+		},
+		{
+			name:            "exclude literal match",
+			excludeBranches: []string{"main"},
+			branch:          "main",
+			expected:        false,
+		},
+		{
+			name:            "exclude literal no match",
+			excludeBranches: []string{"main"},
+			branch:          "develop",
+			expected:        true,
+		},
+		{
+			name:            "include glob match",
+			includeBranches: []string{"release/*"},
+			branch:          "release/1.2",
+			expected:        true,
+		},
+		{
+			name:            "include glob no match",
+			includeBranches: []string{"release/*"},
+			branch:          "develop",
+			expected:        false,
+		},
+		{
+			name:            "exclude glob match",
+			excludeBranches: []string{"feat-*"},
+			branch:          "feat-foo",
+			expected:        false,
+		},
+		{
+			name:            "exclude glob no match",
+			excludeBranches: []string{"feat-*"},
+			branch:          "main",
+			expected:        true,
+		},
+		{
+			name:            "include glob question mark",
+			includeBranches: []string{"feat?"},
+			branch:          "feata",
+			expected:        true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := mustConfig(t, nil, nil, tt.excludeBranches, tt.includeBranches, 20, false, "origin")
+			result := cfg.shouldExecuteInBranch(tt.branch)
+			if result != tt.expected {
+				t.Errorf("shouldExecuteInBranch() = %v, expected %v", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestNewConfigInvalidPattern(t *testing.T) {
+	_, err := newConfig(nil, []string{"feat["}, nil, nil, 20, false, "origin")
+	if err == nil {
+		t.Error("expected error for malformed include pattern, got nil")
+	}
+
+	_, err = newConfig([]string{"build["}, nil, nil, nil, 20, false, "origin")
+	if err == nil {
+		t.Error("expected error for malformed exclude pattern, got nil")
+	}
+
+	_, err = newConfig(nil, nil, nil, []string{"release/["}, 20, false, "origin")
+	if err == nil {
+		t.Error("expected error for malformed include branch pattern, got nil")
+	}
+
+	_, err = newConfig(nil, nil, []string{"feat["}, nil, 20, false, "origin")
+	if err == nil {
+		t.Error("expected error for malformed exclude branch pattern, got nil")
 	}
 }

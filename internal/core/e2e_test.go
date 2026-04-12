@@ -1,22 +1,7 @@
 package core
 
-// End-to-end tests for the two changes made in this package:
-//
-//  1. Bug fix: rebase/reset was silently skipped when starting on a
-//     different branch (e.g. on "feature", calling -rh main or -rb main
-//     would only switch to main but never actually reset/rebase).
-//
-//  2. Feature: configurable remote name via -r / --remote flag.
-//
-//  3. Worktree path convention: sibling directory <repo>-<branch-suffix>.
-//
-//  4. Worktree branch creation fallback to remote-tracking ref when no local branch exists.
-//
-//  5. Hard reset and rebase always execute even when HEAD already equals origin/branch.
-//
-// All tests use only local bare repos so no network access is required.
-
 import (
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -24,19 +9,6 @@ import (
 	"testing"
 )
 
-// makeRepoOnFeatureBranchWithStaleOriginMain builds the exact scenario that
-// triggered the bug:
-//
-//   - A bare remote with two commits on main.
-//   - A working repo whose local main is still at the FIRST commit (stale
-//     origin/main), while the remote has advanced to the second commit.
-//   - The working repo is currently on "feature", not on main.
-//
-// When processSingleReset is called with target "main", the old code would:
-//  1. Switch to main (local main == stale origin/main → checkAlreadyAtTarget true → SKIP).
-//
-// With the fix, a fetch runs after the switch, origin/main is updated to
-// the second commit, and the reset/rebase actually executes.
 func makeRepoOnFeatureBranchWithStaleOriginMain(t *testing.T) (repoDir, remoteDir string) {
 	t.Helper()
 	remoteDir = t.TempDir()
@@ -45,14 +17,11 @@ func makeRepoOnFeatureBranchWithStaleOriginMain(t *testing.T) (repoDir, remoteDi
 
 	runCmd(t, remoteDir, "git", "init", "--bare", "-b", "main")
 
-	// Initial commit: repoDir and origin are in sync.
 	createGitRepo(t, repoDir)
 	runCmd(t, repoDir, "git", "remote", "add", "origin", remoteDir)
 	runCmd(t, repoDir, "git", "push", "origin", "main")
-	runCmd(t, repoDir, "git", "fetch", "origin") // local origin/main ref = C0
+	runCmd(t, repoDir, "git", "fetch", "origin")
 
-	// A second clone pushes C1 to origin/main. repoDir does NOT fetch,
-	// so its local origin/main tracking ref stays at C0.
 	runCmd(t, otherDir, "git", "init", "-b", "main")
 	runCmd(t, otherDir, "git", "config", "user.name", "test")
 	runCmd(t, otherDir, "git", "config", "user.email", "test@test.com")
@@ -64,17 +33,11 @@ func makeRepoOnFeatureBranchWithStaleOriginMain(t *testing.T) (repoDir, remoteDi
 	runCmd(t, otherDir, "git", "commit", "-m", "C1: remote-only commit")
 	runCmd(t, otherDir, "git", "push", "origin", "main")
 
-	// repoDir switches to "feature" — it is NOT on main.
 	runCmd(t, repoDir, "git", "checkout", "-b", "feature")
 
 	return
 }
 
-// --- Bug regression: rebase/reset from a different branch ---
-
-// TestE2EHardResetFromDifferentBranchNotSkipped is the primary regression test.
-// Running -rh main while on "feature" must reset the current branch (feature)
-// to origin/main without switching branches.
 func TestE2EHardResetFromDifferentBranchNotSkipped(t *testing.T) {
 	repoDir, _ := makeRepoOnFeatureBranchWithStaleOriginMain(t)
 
@@ -88,7 +51,6 @@ func TestE2EHardResetFromDifferentBranchNotSkipped(t *testing.T) {
 		t.Fatalf("expected Success=true, got error: %q", res.Error)
 	}
 
-	// Current branch must remain "feature" — we never switch.
 	branch, err := getCurrentBranch(repoDir)
 	if err != nil {
 		t.Fatal(err)
@@ -97,14 +59,11 @@ func TestE2EHardResetFromDifferentBranchNotSkipped(t *testing.T) {
 		t.Errorf("expected current branch to remain 'feature', got %q", branch)
 	}
 
-	// The hard reset brought origin/main content onto feature.
 	if _, statErr := os.Stat(filepath.Join(repoDir, "remote-only.txt")); os.IsNotExist(statErr) {
 		t.Error("expected remote-only.txt to exist after hard reset to origin/main")
 	}
 }
 
-// TestE2ERebaseFromDifferentBranchNotSkipped verifies -rb main while on "feature":
-// rebases feature onto origin/main without switching branches.
 func TestE2ERebaseFromDifferentBranchNotSkipped(t *testing.T) {
 	repoDir, _ := makeRepoOnFeatureBranchWithStaleOriginMain(t)
 
@@ -118,7 +77,6 @@ func TestE2ERebaseFromDifferentBranchNotSkipped(t *testing.T) {
 		t.Fatalf("expected Success=true, got error: %q", res.Error)
 	}
 
-	// Current branch must remain "feature".
 	branch, err := getCurrentBranch(repoDir)
 	if err != nil {
 		t.Fatal(err)
@@ -132,8 +90,6 @@ func TestE2ERebaseFromDifferentBranchNotSkipped(t *testing.T) {
 	}
 }
 
-// TestE2ESoftResetFromDifferentBranchNotSkipped covers the -rs variant:
-// soft-resets the current branch (feature) to origin/main without switching.
 func TestE2ESoftResetFromDifferentBranchNotSkipped(t *testing.T) {
 	repoDir, _ := makeRepoOnFeatureBranchWithStaleOriginMain(t)
 
@@ -147,7 +103,6 @@ func TestE2ESoftResetFromDifferentBranchNotSkipped(t *testing.T) {
 		t.Fatalf("expected Success=true, got error: %q", res.Error)
 	}
 
-	// Current branch must remain "feature".
 	branch, err := getCurrentBranch(repoDir)
 	if err != nil {
 		t.Fatal(err)
@@ -161,10 +116,6 @@ func TestE2ESoftResetFromDifferentBranchNotSkipped(t *testing.T) {
 	}
 }
 
-// --- Feature: configurable remote name ---
-
-// makeRepoWithCustomRemote creates a repo with the remote named "upstream"
-// instead of "origin". Used to verify that passing remote="upstream" works.
 func makeRepoWithCustomRemote(t *testing.T, remoteName string) (repoDir, remoteDir string) {
 	t.Helper()
 	remoteDir = t.TempDir()
@@ -176,19 +127,15 @@ func makeRepoWithCustomRemote(t *testing.T, remoteName string) (repoDir, remoteD
 	runCmd(t, repoDir, "git", "push", remoteName, "main")
 	runCmd(t, repoDir, "git", "fetch", remoteName)
 
-	// Add a local commit so the remote tracking ref is behind → reset will fire.
 	writeFile(t, repoDir, "local-only.txt", "local commit ahead of remote")
 	runCmd(t, repoDir, "git", "add", ".")
 	runCmd(t, repoDir, "git", "commit", "-m", "local commit ahead of upstream/main")
 	return
 }
 
-// TestE2ECustomRemoteProcessSingleReset verifies that processSingleReset uses
-// the supplied remote name instead of hardcoded "origin".
 func TestE2ECustomRemoteProcessSingleReset(t *testing.T) {
 	repoDir, _ := makeRepoWithCustomRemote(t, "upstream")
 
-	// "origin" does not exist — using "origin" must skip.
 	repo := RepoInfo{Path: repoDir, RelPath: "repo"}
 	resOrigin := processSingleReset(repo, "main", "soft", "origin", nil)
 	if !resOrigin.Skipped {
@@ -198,7 +145,6 @@ func TestE2ECustomRemoteProcessSingleReset(t *testing.T) {
 		t.Errorf("expected skip reason to mention 'origin', got %q", resOrigin.SkipReason)
 	}
 
-	// "upstream" exists — reset must succeed.
 	resUpstream := processSingleReset(repo, "main", "soft", "upstream", nil)
 	if resUpstream.Skipped {
 		t.Fatalf("expected reset to run with remote 'upstream', got skipped: %q", resUpstream.SkipReason)
@@ -208,8 +154,6 @@ func TestE2ECustomRemoteProcessSingleReset(t *testing.T) {
 	}
 }
 
-// TestE2ECustomRemoteSyncBranchViaCfg verifies that syncBranch (soft mode, no
-// TTY check) picks up the remote from cfg.Remote.
 func TestE2ECustomRemoteSyncBranchViaCfg(t *testing.T) {
 	tmpDir := t.TempDir()
 	remoteDir := t.TempDir()
@@ -224,7 +168,6 @@ func TestE2ECustomRemoteSyncBranchViaCfg(t *testing.T) {
 	runCmd(t, repoDir, "git", "push", "upstream", "main")
 	runCmd(t, repoDir, "git", "fetch", "upstream")
 
-	// Local commit ahead of upstream/main so the soft reset will actually run.
 	writeFile(t, repoDir, "ahead.txt", "ahead of upstream")
 	runCmd(t, repoDir, "git", "add", ".")
 	runCmd(t, repoDir, "git", "commit", "-m", "local commit ahead of upstream")
@@ -234,7 +177,7 @@ func TestE2ECustomRemoteSyncBranchViaCfg(t *testing.T) {
 	os.Stdout = pw
 
 	cfg := mustConfig(t, defaultExcludeDirs, nil, nil, nil, 20, false, "upstream")
-	syncBranch(tmpDir, "main", "soft", 2, cfg)
+	syncBranch(context.Background(), tmpDir, "main", "soft", 2, cfg) //nolint:errcheck
 
 	_ = pw.Close()
 	os.Stdout = oldStdout
@@ -247,9 +190,6 @@ func TestE2ECustomRemoteSyncBranchViaCfg(t *testing.T) {
 	}
 }
 
-// TestE2ECustomRemoteRunFlag verifies that the -r flag is parsed by Run() and
-// forwarded to syncBranch. Uses an empty directory so syncBranch exits early
-// with "No repos found" — the test just confirms Run() returns no error.
 func TestE2ECustomRemoteRunFlag(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -266,7 +206,7 @@ func TestE2ECustomRemoteRunFlag(t *testing.T) {
 	_, w, _ := os.Pipe()
 	os.Stdout = w
 
-	runErr := Run([]string{"-rs", "main", "-r", "upstream"})
+	runErr := Run(context.Background(), []string{"-rs", "main", "-r", "upstream"})
 
 	_ = w.Close()
 	os.Stdout = oldStdout
@@ -276,14 +216,9 @@ func TestE2ECustomRemoteRunFlag(t *testing.T) {
 	}
 }
 
-// --- Inline remote/branch notation ---
-
-// TestE2EInlineRemoteReset verifies that passing "origin/main" as the branch
-// arg is equivalent to passing "main" with -r origin.
 func TestE2EInlineRemoteReset(t *testing.T) {
 	repoDir, remoteDir := makeRepoWithRemote(t)
 
-	// Push a new commit so origin/main is ahead of local.
 	otherDir := t.TempDir()
 	runCmd(t, otherDir, "git", "init", "-b", "main")
 	runCmd(t, otherDir, "git", "config", "user.name", "test")
@@ -298,7 +233,6 @@ func TestE2EInlineRemoteReset(t *testing.T) {
 
 	repo := RepoInfo{Path: repoDir, RelPath: "repo"}
 
-	// Pass "origin/main" as the branch arg — remote is extracted automatically.
 	res := processSingleReset(repo, "origin/main", "hard", "origin", nil)
 	if !res.Success {
 		t.Fatalf("expected Success=true, got error=%q skipped=%v reason=%q", res.Error, res.Skipped, res.SkipReason)
@@ -308,13 +242,9 @@ func TestE2EInlineRemoteReset(t *testing.T) {
 	}
 }
 
-// TestE2EInlineRemoteResetSlashedBranch verifies a slashed branch name like
-// "feat/branch1" is not mistakenly split — it is used as the full branch name
-// under the default remote.
 func TestE2EInlineRemoteResetSlashedBranch(t *testing.T) {
 	repoDir, remoteDir := makeRepoWithRemote(t)
 
-	// Create and push a slashed branch on the remote.
 	otherDir := t.TempDir()
 	runCmd(t, otherDir, "git", "init", "-b", "main")
 	runCmd(t, otherDir, "git", "config", "user.name", "test")
@@ -328,7 +258,6 @@ func TestE2EInlineRemoteResetSlashedBranch(t *testing.T) {
 	runCmd(t, otherDir, "git", "commit", "-m", "feat commit")
 	runCmd(t, otherDir, "git", "push", "origin", "feat/branch1")
 
-	// "feat" is not a remote — the full arg is used as the branch name.
 	repo := RepoInfo{Path: repoDir, RelPath: "repo"}
 	res := processSingleReset(repo, "feat/branch1", "hard", "origin", nil)
 	if !res.Success {
@@ -340,8 +269,6 @@ func TestE2EInlineRemoteResetSlashedBranch(t *testing.T) {
 	}
 }
 
-// TestE2ECustomRemoteSwitchBranch verifies that switchBranches uses cfg.Remote
-// (set via -r) when fetching a branch that doesn't exist locally.
 func TestE2ECustomRemoteSwitchBranch(t *testing.T) {
 	remoteDir := t.TempDir()
 	repoDir := t.TempDir()
@@ -380,10 +307,6 @@ func TestE2ECustomRemoteSwitchBranch(t *testing.T) {
 	}
 }
 
-// --- Worktree path convention ---
-
-// TestWorktreePathSibling verifies the sibling directory naming convention:
-// <parent>/<repo-basename>-<branch-suffix>.
 func TestWorktreePathSibling(t *testing.T) {
 	cases := []struct {
 		repoPath string
@@ -404,46 +327,32 @@ func TestWorktreePathSibling(t *testing.T) {
 	}
 }
 
-// --- Worktree creation with remote-only base ---
-
-// TestWorktreeCreateRemoteOnlyBase verifies that when the base branch (e.g.
-// "main") only exists as a remote-tracking ref and not as a local branch,
-// worktreeCreate still creates the worktree successfully.
 func TestWorktreeCreateRemoteOnlyBase(t *testing.T) {
 	remoteDir := t.TempDir()
 	parentDir := t.TempDir()
 	repoDir := filepath.Join(parentDir, "projA")
 
-	// Set up: bare remote + working repo whose only branch is main (no local master).
 	runCmd(t, remoteDir, "git", "init", "--bare", "-b", "main")
 	createGitRepo(t, repoDir)
 	runCmd(t, repoDir, "git", "remote", "add", "origin", remoteDir)
 	runCmd(t, repoDir, "git", "push", "origin", "main")
 	runCmd(t, repoDir, "git", "fetch", "origin")
 
-	// No local "main" branch yet after fetch — only origin/main tracking ref exists.
-	// Delete the local main branch to simulate the "remote-only base" scenario.
 	runCmd(t, repoDir, "git", "checkout", "--detach")
 	runCmd(t, repoDir, "git", "branch", "-D", "main")
 
 	cfg := mustConfig(t, defaultExcludeDirs, nil, nil, nil, 20, false, "origin")
-	worktreeCreate(parentDir, "feat/my-task", "main", 2, cfg)
+	worktreeCreate(context.Background(), parentDir, "feat/my-task", "main", 2, cfg) //nolint:errcheck
 
-	// Worktree must exist at the sibling path projA-my-task.
 	wtPath := filepath.Join(parentDir, "projA-my-task")
 	if _, err := os.Stat(wtPath); err != nil {
 		t.Fatalf("expected worktree at %s, got: %v", wtPath, err)
 	}
 }
 
-// --- Hard reset and rebase run even when already at target ---
-
-// TestHardResetRunsWhenAlreadyAtTarget verifies that -rh does NOT skip when
-// HEAD already equals origin/main (working tree may be dirty with tracked changes).
 func TestHardResetRunsWhenAlreadyAtTarget(t *testing.T) {
 	repoDir, _ := makeRepoWithRemote(t)
 
-	// Modify a tracked file — HEAD is still at origin/main but working tree is dirty.
 	writeFile(t, repoDir, "README.md", "modified content — should be discarded")
 
 	repo := RepoInfo{Path: repoDir, RelPath: "repo"}
@@ -456,7 +365,6 @@ func TestHardResetRunsWhenAlreadyAtTarget(t *testing.T) {
 		t.Fatalf("expected Success=true, got error: %q", res.Error)
 	}
 
-	// README.md must be restored to its committed content.
 	content, err := os.ReadFile(filepath.Join(repoDir, "README.md"))
 	if err != nil {
 		t.Fatal(err)
@@ -466,8 +374,6 @@ func TestHardResetRunsWhenAlreadyAtTarget(t *testing.T) {
 	}
 }
 
-// TestRebaseRunsWhenAlreadyAtTarget verifies that -rb does NOT skip when
-// HEAD already equals origin/main; git handles the no-op gracefully.
 func TestRebaseRunsWhenAlreadyAtTarget(t *testing.T) {
 	repoDir, _ := makeRepoWithRemote(t)
 
@@ -479,5 +385,252 @@ func TestRebaseRunsWhenAlreadyAtTarget(t *testing.T) {
 	}
 	if !res.Success {
 		t.Fatalf("expected Success=true, got error: %q", res.Error)
+	}
+}
+
+func makeMultiRepoWorkspace(t *testing.T) (parentDir, repoA, repoB string) {
+	t.Helper()
+	parentDir = t.TempDir()
+	repoA = filepath.Join(parentDir, "repoA")
+	repoB = filepath.Join(parentDir, "repoB")
+	createGitRepo(t, repoA)
+	createGitRepo(t, repoB)
+	return
+}
+
+func TestE2EWorktreeRemoveGlobMultiRepo(t *testing.T) {
+	parentDir, repoA, repoB := makeMultiRepoWorkspace(t)
+
+	for _, repo := range []string{repoA, repoB} {
+		runCmd(t, repo, "git", "branch", "feat/AB-100")
+		runCmd(t, repo, "git", "branch", "feat/AB-200")
+		runCmd(t, repo, "git", "branch", "fix/bug-1")
+	}
+
+	wtA100 := filepath.Join(parentDir, "repoA-AB-100")
+	wtA200 := filepath.Join(parentDir, "repoA-AB-200")
+	wtAFix := filepath.Join(parentDir, "repoA-bug-1")
+	wtB100 := filepath.Join(parentDir, "repoB-AB-100")
+	wtB200 := filepath.Join(parentDir, "repoB-AB-200")
+	wtBFix := filepath.Join(parentDir, "repoB-bug-1")
+
+	runCmd(t, repoA, "git", "worktree", "add", wtA100, "feat/AB-100")
+	runCmd(t, repoA, "git", "worktree", "add", wtA200, "feat/AB-200")
+	runCmd(t, repoA, "git", "worktree", "add", wtAFix, "fix/bug-1")
+	runCmd(t, repoB, "git", "worktree", "add", wtB100, "feat/AB-100")
+	runCmd(t, repoB, "git", "worktree", "add", wtB200, "feat/AB-200")
+	runCmd(t, repoB, "git", "worktree", "add", wtBFix, "fix/bug-1")
+
+	cfg := mustConfig(t, defaultExcludeDirs, nil, nil, nil, 20, false, "origin")
+	worktreeRemove(context.Background(), parentDir, "feat/AB*", 2, cfg) //nolint:errcheck
+
+	for _, wt := range []string{wtA100, wtA200, wtB100, wtB200} {
+		if _, err := os.Stat(wt); err == nil {
+			t.Errorf("expected worktree %s to be removed", wt)
+		}
+	}
+	for _, wt := range []string{wtAFix, wtBFix} {
+		if _, err := os.Stat(wt); err != nil {
+			t.Errorf("expected worktree %s to remain, got: %v", wt, err)
+		}
+	}
+}
+
+func TestE2EWorktreeRemoveGlobViaRunFlag(t *testing.T) {
+	parentDir, repoA, repoB := makeMultiRepoWorkspace(t)
+
+	for _, repo := range []string{repoA, repoB} {
+		runCmd(t, repo, "git", "branch", "feat/task-1")
+		runCmd(t, repo, "git", "branch", "fix/unrelated")
+	}
+
+	wtA := filepath.Join(parentDir, "repoA-task-1")
+	wtB := filepath.Join(parentDir, "repoB-task-1")
+	wtAFix := filepath.Join(parentDir, "repoA-unrelated")
+	wtBFix := filepath.Join(parentDir, "repoB-unrelated")
+
+	runCmd(t, repoA, "git", "worktree", "add", wtA, "feat/task-1")
+	runCmd(t, repoA, "git", "worktree", "add", wtAFix, "fix/unrelated")
+	runCmd(t, repoB, "git", "worktree", "add", wtB, "feat/task-1")
+	runCmd(t, repoB, "git", "worktree", "add", wtBFix, "fix/unrelated")
+
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(parentDir); err != nil {
+		t.Skip("cannot change directory:", err)
+	}
+	defer func() { _ = os.Chdir(origDir) }()
+
+	oldStdout := os.Stdout
+	_, w, _ := os.Pipe()
+	os.Stdout = w
+	runErr := Run(context.Background(), []string{"-wr", "feat/*"})
+	_ = w.Close()
+	os.Stdout = oldStdout
+
+	if runErr != nil {
+		t.Fatalf("Run(-wr feat/*) returned error: %v", runErr)
+	}
+
+	for _, wt := range []string{wtA, wtB} {
+		if _, err := os.Stat(wt); err == nil {
+			t.Errorf("expected worktree %s to be removed after -wr feat/*", wt)
+		}
+	}
+	for _, wt := range []string{wtAFix, wtBFix} {
+		if _, err := os.Stat(wt); err != nil {
+			t.Errorf("expected worktree %s to remain, got: %v", wt, err)
+		}
+	}
+}
+
+func TestE2EWorktreeIbFilterRemove(t *testing.T) {
+	parentDir, repoA, repoB := makeMultiRepoWorkspace(t)
+
+	runCmd(t, repoB, "git", "checkout", "-b", "develop")
+
+	for _, repo := range []string{repoA, repoB} {
+		runCmd(t, repo, "git", "branch", "feat/task-1")
+	}
+
+	wtA := filepath.Join(parentDir, "repoA-task-1")
+	wtB := filepath.Join(parentDir, "repoB-task-1")
+	runCmd(t, repoA, "git", "worktree", "add", wtA, "feat/task-1")
+	runCmd(t, repoB, "git", "worktree", "add", wtB, "feat/task-1")
+
+	cfg := mustConfig(t, defaultExcludeDirs, nil, nil, []string{"main"}, 20, false, "origin")
+	worktreeRemove(context.Background(), parentDir, "feat/task-1", 2, cfg) //nolint:errcheck
+
+	if _, err := os.Stat(wtA); err == nil {
+		t.Errorf("expected repoA worktree to be removed (repoA is on main)")
+	}
+	if _, err := os.Stat(wtB); err != nil {
+		t.Errorf("expected repoB worktree to remain (repoB is on develop), got: %v", err)
+	}
+}
+
+func TestE2EWorktreeIbGlobFilterRemove(t *testing.T) {
+	parentDir, repoA, repoB := makeMultiRepoWorkspace(t)
+
+	runCmd(t, repoA, "git", "checkout", "-b", "feat/develop")
+
+	for _, repo := range []string{repoA, repoB} {
+		runCmd(t, repo, "git", "branch", "task/cleanup")
+	}
+
+	wtA := filepath.Join(parentDir, "repoA-cleanup")
+	wtB := filepath.Join(parentDir, "repoB-cleanup")
+	runCmd(t, repoA, "git", "worktree", "add", wtA, "task/cleanup")
+	runCmd(t, repoB, "git", "worktree", "add", wtB, "task/cleanup")
+
+	cfg := mustConfig(t, defaultExcludeDirs, nil, nil, []string{"feat/*"}, 20, false, "origin")
+	worktreeRemove(context.Background(), parentDir, "task/cleanup", 2, cfg) //nolint:errcheck
+
+	if _, err := os.Stat(wtA); err == nil {
+		t.Errorf("expected repoA worktree to be removed (repoA is on feat/develop which matches feat/*)")
+	}
+	if _, err := os.Stat(wtB); err != nil {
+		t.Errorf("expected repoB worktree to remain (repoB is on main, no match for feat/*), got: %v", err)
+	}
+}
+
+func TestE2EWorktreeCommandsInLinkedWorktreeWorkspace(t *testing.T) {
+	mainDir := t.TempDir()
+	featDir := t.TempDir()
+
+	repoA := filepath.Join(mainDir, "repoA")
+	repoB := filepath.Join(mainDir, "repoB")
+	createGitRepo(t, repoA)
+	createGitRepo(t, repoB)
+
+	for _, repo := range []string{repoA, repoB} {
+		runCmd(t, repo, "git", "branch", "feat/task")
+	}
+	wtA := filepath.Join(featDir, "repoA")
+	wtB := filepath.Join(featDir, "repoB")
+	runCmd(t, repoA, "git", "worktree", "add", wtA, "feat/task")
+	runCmd(t, repoB, "git", "worktree", "add", wtB, "feat/task")
+
+	cfg := mustConfig(t, defaultExcludeDirs, nil, nil, nil, 20, false, "origin")
+
+	worktreeListAll(context.Background(), featDir, 2, cfg) //nolint:errcheck
+
+	for _, repo := range []string{repoA, repoB} {
+		runCmd(t, repo, "git", "branch", "feat/cleanup")
+	}
+	wtACleanup := filepath.Join(mainDir, "repoA-cleanup")
+	wtBCleanup := filepath.Join(mainDir, "repoB-cleanup")
+	runCmd(t, repoA, "git", "worktree", "add", wtACleanup, "feat/cleanup")
+	runCmd(t, repoB, "git", "worktree", "add", wtBCleanup, "feat/cleanup")
+
+	worktreeRemove(context.Background(), featDir, "feat/cleanup", 2, cfg) //nolint:errcheck
+
+	if _, err := os.Stat(wtACleanup); err == nil {
+		t.Errorf("expected worktree %s to be removed via linked-worktree workspace", wtACleanup)
+	}
+	if _, err := os.Stat(wtBCleanup); err == nil {
+		t.Errorf("expected worktree %s to be removed via linked-worktree workspace", wtBCleanup)
+	}
+}
+
+func TestE2EWorktreeDeduplicateMixedWorkspace(t *testing.T) {
+	parentDir := t.TempDir()
+
+	repoA := filepath.Join(parentDir, "repoA")
+	createGitRepo(t, repoA)
+	runCmd(t, repoA, "git", "branch", "feat/task")
+
+	wtA := filepath.Join(parentDir, "repoA-task")
+	runCmd(t, repoA, "git", "worktree", "add", wtA, "feat/task")
+
+	runCmd(t, repoA, "git", "branch", "feat/cleanup")
+	wtACleanup := filepath.Join(parentDir, "repoA-cleanup")
+	runCmd(t, repoA, "git", "worktree", "add", wtACleanup, "feat/cleanup")
+
+	cfg := mustConfig(t, defaultExcludeDirs, nil, nil, nil, 20, false, "origin")
+	worktreeRemove(context.Background(), parentDir, "feat/cleanup", 2, cfg) //nolint:errcheck
+
+	if _, err := os.Stat(wtACleanup); err == nil {
+		t.Errorf("expected worktree %s to be removed", wtACleanup)
+	}
+	if _, err := os.Stat(wtA); err != nil {
+		t.Errorf("expected worktree %s to remain, got: %v", wtA, err)
+	}
+}
+
+func TestE2EWorktreeOpenIbFilter(t *testing.T) {
+	parentDir, repoA, repoB := makeMultiRepoWorkspace(t)
+
+	runCmd(t, repoB, "git", "checkout", "-b", "develop")
+
+	for _, repo := range []string{repoA, repoB} {
+		runCmd(t, repo, "git", "branch", "feat/task")
+	}
+
+	wtA := filepath.Join(parentDir, "repoA-task")
+	wtB := filepath.Join(parentDir, "repoB-task")
+	runCmd(t, repoA, "git", "worktree", "add", wtA, "feat/task")
+	runCmd(t, repoB, "git", "worktree", "add", wtB, "feat/task")
+
+	oldStdout := os.Stdout
+	pr, pw, _ := os.Pipe()
+	os.Stdout = pw
+
+	cfg := mustConfig(t, defaultExcludeDirs, nil, nil, []string{"main"}, 20, false, "origin")
+	worktreeOpen(context.Background(), parentDir, "feat/task", 2, cfg) //nolint:errcheck
+
+	_ = pw.Close()
+	os.Stdout = oldStdout
+
+	outBytes, _ := io.ReadAll(pr)
+	output := string(outBytes)
+
+	if !strings.Contains(output, "repoA") {
+		t.Errorf("expected repoA in output, got: %s", output)
+	}
+	if strings.Contains(output, "repoB") {
+		t.Errorf("expected repoB to be absent from output (filtered by -ib main), got: %s", output)
 	}
 }

@@ -5,38 +5,22 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 )
 
-// worktreePath returns the path where a worktree for the given branch should live.
-// Convention: <parent-of-repo>/<repo-basename>-<branch-suffix>
-// branch-suffix is the last path component of the branch name (e.g. "feat/abc" → "abc").
 func worktreePath(repoPath, branch string) string {
 	parts := strings.Split(branch, "/")
 	suffix := parts[len(parts)-1]
 	return filepath.Join(filepath.Dir(repoPath), filepath.Base(repoPath)+"-"+suffix)
 }
 
-func worktreeListAll(root string, workers int, cfg *Config) {
-	fmt.Printf("Discovering repos in %s...\n", root)
-	allRepos, err := findGitRepos(root, cfg)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "Error:", err)
-		os.Exit(1)
-	}
-	if len(allRepos) == 0 {
-		fmt.Println("No repos found")
-		return
-	}
-
-	repos := cfg.filterReposForExecution(allRepos)
-	repos = cfg.filterWorktrees(repos)
-	if len(repos) == 0 {
-		fmt.Println("No repos match the specified include/exclude criteria")
-		return
+func worktreeListAll(ctx context.Context, root string, workers int, cfg *Config) error {
+	repos, _ := discoverRepos(root, workers, cfg, true)
+	if repos == nil {
+		return nil
 	}
 
 	fmt.Println(StyleInfo.Render(fmt.Sprintf("Listing worktrees in %d repos...", len(repos))))
@@ -47,34 +31,15 @@ func worktreeListAll(root string, workers int, cfg *Config) {
 		err     error
 	}
 
-	repoCh := make(chan RepoInfo, len(repos))
-	resCh := make(chan wtResult, len(repos))
+	results := runPool(ctx, repos, workers, func(ctx context.Context, r RepoInfo) wtResult {
+		out, _, err := executeGitCommandWithRetry(ctx, r.Path, "worktree", "list")
+		return wtResult{relPath: r.RelPath, output: string(out), err: err}
+	})
 
-	var wg sync.WaitGroup
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for r := range repoCh {
-				out, _, err := executeGitCommandWithRetry(context.Background(), r.Path, "worktree", "list")
-				resCh <- wtResult{relPath: r.RelPath, output: string(out), err: err}
-			}
-		}()
-	}
-	for _, r := range repos {
-		repoCh <- r
-	}
-	close(repoCh)
-	go func() { wg.Wait(); close(resCh) }()
-
-	type entry struct {
-		relPath string
-		output  string
-	}
-	var entries []entry
-	for res := range resCh {
+	entries := make([]wtResult, 0, len(results))
+	for _, res := range results {
 		if res.err == nil {
-			entries = append(entries, entry{res.relPath, res.output})
+			entries = append(entries, res)
 		}
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].relPath < entries[j].relPath })
@@ -85,149 +50,95 @@ func worktreeListAll(root string, workers int, cfg *Config) {
 		fmt.Print(e.output)
 		fmt.Println(StyleDim.Render("================="))
 	}
+	return nil
 }
 
-func worktreeCreate(root, branch, base string, workers int, cfg *Config) {
-	fmt.Printf("Discovering repos in %s...\n", root)
-	allRepos, err := findGitRepos(root, cfg)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "Error:", err)
-		os.Exit(1)
-	}
-	if len(allRepos) == 0 {
-		fmt.Println("No repos found")
-		return
-	}
-
-	repos := cfg.filterReposForExecution(allRepos)
-	repos = cfg.filterWorktrees(repos)
-	if len(repos) == 0 {
-		fmt.Println("No repos match the specified include/exclude criteria")
-		return
+func worktreeCreate(ctx context.Context, root, branch, base string, workers int, cfg *Config) error {
+	repos, _ := discoverRepos(root, workers, cfg, true)
+	if repos == nil {
+		return nil
 	}
 
 	fmt.Println(StyleInfo.Render(fmt.Sprintf("Creating worktrees for '%s' (base: %s) in %d repos with %d workers...", branch, base, len(repos), min(workers, len(repos)))))
 
 	logManager, err := NewLogManager()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating log manager: %s\n", err)
-		os.Exit(1)
+		return fmt.Errorf("log manager: %w", err)
 	}
 
 	progress := NewProgressState(repos, fmt.Sprintf("Creating worktree '%s'", branch), cfg.PageSize)
-	progress.render()
-	progress.StartInput()
+	stop := progress.start()
 
-	repoCh := make(chan RepoInfo, len(repos))
-	resCh := make(chan CommandResult, len(repos))
+	results := runPool(ctx, repos, workers, func(ctx context.Context, r RepoInfo) CommandResult {
+		progress.UpdateStatus(r.RelPath, statusProcessing, "")
 
-	var wg sync.WaitGroup
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for r := range repoCh {
-				progress.UpdateStatus(r.RelPath, statusProcessing, "")
+		logFile, _ := logManager.CreateLogFile(r.RelPath)
+		out := io.Writer(io.Discard)
+		if logFile != nil {
+			out = logFile
+			defer func() { _ = logFile.Close() }()
+		}
 
-				logFile, _ := logManager.CreateLogFile(r.RelPath)
-				out := io.Discard
-				if logFile != nil {
-					out = logFile
-				}
+		wtPath := worktreePath(r.Path, branch)
 
-				wtPath := worktreePath(r.Path, branch)
-				var cmdErr error
+		if _, statErr := os.Stat(wtPath); statErr == nil {
+			_, _ = fmt.Fprintf(out, "worktree already exists at %s\n", wtPath)
+			progress.UpdateStatus(r.RelPath, statusSkipped, "worktree already exists")
+			return CommandResult{RelPath: r.RelPath, Skipped: true}
+		}
 
-				if _, statErr := os.Stat(wtPath); statErr == nil {
-					msg := fmt.Sprintf("worktree already exists at %s", wtPath)
-					_, _ = fmt.Fprintln(out, msg)
-					progress.UpdateStatus(r.RelPath, statusSkipped, "worktree already exists")
-					if logFile != nil {
-						_ = logFile.Close()
-					}
-					resCh <- CommandResult{RelPath: r.RelPath}
-					continue
-				}
-
-				// Create branch from base if it doesn't exist locally.
-				if _, _, err2 := executeGitCommandWithRetry(context.Background(), r.Path, "show-ref", "--verify", "--quiet", "refs/heads/"+branch); err2 != nil {
-					_, _ = fmt.Fprintf(out, "Creating branch '%s' from '%s'...\n", branch, base)
-					gitOut, _, err3 := executeGitCommandWithRetry(context.Background(), r.Path, "branch", branch, base)
-					if err3 != nil && !strings.Contains(base, "/") {
-						// base may only exist as a remote-tracking ref; retry with remote prefix
-						gitOut, _, err3 = executeGitCommandWithRetry(context.Background(), r.Path, "branch", branch, cfg.Remote+"/"+base)
-					}
-					if err3 != nil {
-						_, _ = fmt.Fprintf(out, "%s", gitOut)
-						_, _ = fmt.Fprintf(out, "Failed to create branch: %v\n", err3)
-						progress.UpdateStatus(r.RelPath, statusFailed, fmt.Sprintf("base '%s' not found", base))
-						if logFile != nil {
-							_ = logFile.Close()
-						}
-						resCh <- CommandResult{RelPath: r.RelPath, Error: err3}
-						continue
-					}
-				}
-
-				if err3 := os.MkdirAll(filepath.Dir(wtPath), 0o755); err3 != nil {
-					progress.UpdateStatus(r.RelPath, statusFailed, "mkdir failed")
-					if logFile != nil {
-						_ = logFile.Close()
-					}
-					resCh <- CommandResult{RelPath: r.RelPath, Error: err3}
-					continue
-				}
-
-				if gitOut, _, err3 := executeGitCommandWithRetry(context.Background(), r.Path, "worktree", "add", wtPath, branch); err3 != nil {
-					cmdErr = err3
-					_, _ = fmt.Fprintf(out, "%s", gitOut)
-					_, _ = fmt.Fprintf(out, "git worktree add failed: %v\n", err3)
-				} else {
-					// Copy .env if present.
-					envSrc := filepath.Join(r.Path, ".env")
-					if _, statErr := os.Stat(envSrc); statErr == nil {
-						envDst := filepath.Join(wtPath, ".env")
-						if copyErr := copyFile(envSrc, envDst); copyErr == nil {
-							_, _ = fmt.Fprintf(out, "Copied .env to worktree.\n")
-						}
-					}
-					_, _ = fmt.Fprintf(out, "Worktree ready: %s\n", wtPath)
-				}
-
-				if logFile != nil {
-					_ = logFile.Close()
-				}
-
-				if cmdErr != nil {
-					progress.UpdateStatus(r.RelPath, statusFailed, "worktree add failed")
-				} else {
-					progress.UpdateStatus(r.RelPath, statusCompleted, "")
-				}
-				resCh <- CommandResult{RelPath: r.RelPath, Error: cmdErr}
+		if _, _, refErr := executeGitCommandWithRetry(ctx, r.Path, "show-ref", "--verify", "--quiet", "refs/heads/"+branch); refErr != nil {
+			_, _ = fmt.Fprintf(out, "Creating branch '%s' from '%s'...\n", branch, base)
+			gitOut, _, bErr := executeGitCommandWithRetry(ctx, r.Path, "branch", branch, base)
+			if bErr != nil && !strings.Contains(base, "/") {
+				gitOut, _, bErr = executeGitCommandWithRetry(ctx, r.Path, "branch", branch, cfg.Remote+"/"+base)
 			}
-		}()
-	}
-	for _, r := range repos {
-		repoCh <- r
-	}
-	close(repoCh)
-	go func() { wg.Wait(); close(resCh) }()
+			if bErr != nil {
+				_, _ = fmt.Fprintf(out, "%s", gitOut)
+				_, _ = fmt.Fprintf(out, "Failed to create branch: %v\n", bErr)
+				progress.UpdateStatus(r.RelPath, statusFailed, fmt.Sprintf("base '%s' not found", base))
+				return CommandResult{RelPath: r.RelPath, Error: bErr}
+			}
+		}
 
-	var results []CommandResult
+		if mkErr := os.MkdirAll(filepath.Dir(wtPath), 0o755); mkErr != nil {
+			progress.UpdateStatus(r.RelPath, statusFailed, "mkdir failed")
+			return CommandResult{RelPath: r.RelPath, Error: mkErr}
+		}
+
+		gitOut, _, addErr := executeGitCommandWithRetry(ctx, r.Path, "worktree", "add", wtPath, branch)
+		if addErr != nil {
+			_, _ = fmt.Fprintf(out, "%s", gitOut)
+			_, _ = fmt.Fprintf(out, "git worktree add failed: %v\n", addErr)
+			progress.UpdateStatus(r.RelPath, statusFailed, "worktree add failed")
+			return CommandResult{RelPath: r.RelPath, Error: addErr}
+		}
+
+		envSrc := filepath.Join(r.Path, ".env")
+		if _, statErr := os.Stat(envSrc); statErr == nil {
+			if copyErr := copyFile(envSrc, filepath.Join(wtPath, ".env")); copyErr == nil {
+				_, _ = fmt.Fprintln(out, "Copied .env to worktree.")
+			}
+		}
+		_, _ = fmt.Fprintf(out, "Worktree ready: %s\n", wtPath)
+
+		progress.UpdateStatus(r.RelPath, statusCompleted, "")
+		return CommandResult{RelPath: r.RelPath}
+	})
+
 	success, failed, skipped := 0, 0, 0
-	for res := range resCh {
-		results = append(results, res)
-		if res.Skipped {
+	for _, res := range results {
+		switch {
+		case res.Skipped:
 			skipped++
-		} else if res.Error != nil {
+		case res.Error != nil:
 			failed++
-		} else {
+		default:
 			success++
 		}
 	}
 
-	progress.RenderFinal()
-	progress.StopInput()
+	stop()
 
 	fmt.Println("\n" + StyleBold.Render("--- Summary ---"))
 	fmt.Printf("Created worktrees for '%s': %s succeeded, %s skipped, %s failed\n",
@@ -243,123 +154,57 @@ func worktreeCreate(root, branch, base string, workers int, cfg *Config) {
 	}
 
 	if failed > 0 {
-		os.Exit(1)
+		return errReposFailed
 	}
+	return nil
 }
 
-func worktreeRemove(root, branch string, workers int, cfg *Config) {
-	fmt.Printf("Discovering repos in %s...\n", root)
-	allRepos, err := findGitRepos(root, cfg)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "Error:", err)
-		os.Exit(1)
-	}
-	if len(allRepos) == 0 {
-		fmt.Println("No repos found")
-		return
+func worktreeRemove(ctx context.Context, root, branch string, workers int, cfg *Config) error {
+	repos, _ := discoverRepos(root, workers, cfg, true)
+	if repos == nil {
+		return nil
 	}
 
-	repos := cfg.filterReposForExecution(allRepos)
-	repos = cfg.filterWorktrees(repos)
-	if len(repos) == 0 {
-		fmt.Println("No repos match the specified include/exclude criteria")
-		return
-	}
-
+	isGlob := hasGlobMeta(branch)
 	fmt.Println(StyleInfo.Render(fmt.Sprintf("Removing worktrees for '%s' in %d repos with %d workers...", branch, len(repos), min(workers, len(repos)))))
 
 	logManager, err := NewLogManager()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating log manager: %s\n", err)
-		os.Exit(1)
+		return fmt.Errorf("log manager: %w", err)
 	}
 
 	progress := NewProgressState(repos, fmt.Sprintf("Removing worktree '%s'", branch), cfg.PageSize)
-	progress.render()
-	progress.StartInput()
+	stop := progress.start()
 
-	repoCh := make(chan RepoInfo, len(repos))
-	resCh := make(chan CommandResult, len(repos))
+	results := runPool(ctx, repos, workers, func(ctx context.Context, r RepoInfo) CommandResult {
+		progress.UpdateStatus(r.RelPath, statusProcessing, "")
 
-	var wg sync.WaitGroup
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for r := range repoCh {
-				progress.UpdateStatus(r.RelPath, statusProcessing, "")
+		logFile, _ := logManager.CreateLogFile(r.RelPath)
+		out := io.Writer(io.Discard)
+		if logFile != nil {
+			out = logFile
+			defer func() { _ = logFile.Close() }()
+		}
 
-				logFile, _ := logManager.CreateLogFile(r.RelPath)
-				out := io.Discard
-				if logFile != nil {
-					out = logFile
-				}
+		if isGlob {
+			return worktreeRemoveGlob(ctx, r, branch, out, progress)
+		}
+		return worktreeRemoveExact(ctx, r, branch, out, progress)
+	})
 
-				wtPath := worktreePath(r.Path, branch)
-
-				// If branch-derived path doesn't exist, try treating input as a directory name.
-				if _, statErr := os.Stat(wtPath); statErr != nil {
-					altPath := filepath.Join(filepath.Dir(r.Path), branch)
-					if _, altErr := os.Stat(altPath); altErr == nil {
-						wtPath = altPath
-					}
-				}
-
-				if _, statErr := os.Stat(wtPath); statErr != nil {
-					_, _ = fmt.Fprintf(out, "No worktree found at %s, skipping\n", wtPath)
-					progress.UpdateStatus(r.RelPath, statusSkipped, "no worktree found")
-					if logFile != nil {
-						_ = logFile.Close()
-					}
-					resCh <- CommandResult{RelPath: r.RelPath}
-					continue
-				}
-
-				gitOut, _, cmdErr := executeGitCommandWithRetry(context.Background(), r.Path, "worktree", "remove", wtPath)
-				if cmdErr != nil {
-					_, _ = fmt.Fprintf(out, "%s", gitOut)
-					_, _ = fmt.Fprintf(out, "git worktree remove failed: %v\n", cmdErr)
-				} else {
-					_, _ = fmt.Fprintf(out, "Removed worktree: %s\n", wtPath)
-					// Clean up empty parent dirs (best-effort).
-					_ = os.Remove(filepath.Dir(wtPath))
-					_ = os.Remove(filepath.Dir(filepath.Dir(wtPath)))
-				}
-
-				if logFile != nil {
-					_ = logFile.Close()
-				}
-
-				if cmdErr != nil {
-					progress.UpdateStatus(r.RelPath, statusFailed, "worktree remove failed")
-				} else {
-					progress.UpdateStatus(r.RelPath, statusCompleted, "")
-				}
-				resCh <- CommandResult{RelPath: r.RelPath, Error: cmdErr}
-			}
-		}()
-	}
-	for _, r := range repos {
-		repoCh <- r
-	}
-	close(repoCh)
-	go func() { wg.Wait(); close(resCh) }()
-
-	var results []CommandResult
 	success, failed, skipped := 0, 0, 0
-	for res := range resCh {
-		results = append(results, res)
-		if res.Skipped {
+	for _, res := range results {
+		switch {
+		case res.Skipped:
 			skipped++
-		} else if res.Error != nil {
+		case res.Error != nil:
 			failed++
-		} else {
+		default:
 			success++
 		}
 	}
 
-	progress.RenderFinal()
-	progress.StopInput()
+	stop()
 
 	fmt.Println("\n" + StyleBold.Render("--- Summary ---"))
 	fmt.Printf("Removed worktrees for '%s': %s succeeded, %s skipped, %s failed\n",
@@ -375,27 +220,103 @@ func worktreeRemove(root, branch string, workers int, cfg *Config) {
 	}
 
 	if failed > 0 {
-		os.Exit(1)
+		return errReposFailed
 	}
+	return nil
 }
 
-func worktreeOpen(root, branch string, workers int, cfg *Config) {
-	fmt.Printf("Discovering repos in %s...\n", root)
-	allRepos, err := findGitRepos(root, cfg)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "Error:", err)
-		os.Exit(1)
+func worktreeRemoveGlob(ctx context.Context, r RepoInfo, pattern string, out io.Writer, progress *ProgressState) CommandResult {
+	porcelain, _, listErr := executeGitCommandWithRetry(ctx, r.Path, "worktree", "list", "--porcelain")
+	if listErr != nil {
+		_, _ = fmt.Fprintf(out, "git worktree list failed: %v\n", listErr)
+		progress.UpdateStatus(r.RelPath, statusFailed, "worktree list failed")
+		return CommandResult{RelPath: r.RelPath, Error: listErr}
 	}
-	if len(allRepos) == 0 {
-		fmt.Println("No repos found")
-		return
+	pairs := parseWorktreeList(string(porcelain))
+	if len(pairs) > 1 {
+		pairs = pairs[1:]
+	} else {
+		pairs = nil
 	}
 
-	repos := cfg.filterReposForExecution(allRepos)
-	repos = cfg.filterWorktrees(repos)
-	if len(repos) == 0 {
-		fmt.Println("No repos match the specified include/exclude criteria")
-		return
+	matched := 0
+	var cmdErr error
+	for _, pair := range pairs {
+		wtBranch, wtPath := pair[0], pair[1]
+		ok, _ := path.Match(pattern, wtBranch)
+		if !ok {
+			continue
+		}
+		matched++
+		gitOut, _, removeErr := executeGitCommandWithRetry(ctx, r.Path, "worktree", "remove", wtPath)
+		if removeErr != nil {
+			_, _ = fmt.Fprintf(out, "%s", gitOut)
+			_, _ = fmt.Fprintf(out, "git worktree remove failed for %s: %v\n", wtPath, removeErr)
+			cmdErr = removeErr
+			continue
+		}
+		_, _ = fmt.Fprintf(out, "Removed worktree: %s\n", wtPath)
+		_ = os.Remove(filepath.Dir(wtPath))
+		_ = os.Remove(filepath.Dir(filepath.Dir(wtPath)))
+	}
+
+	if matched == 0 {
+		_, _ = fmt.Fprintf(out, "No worktrees matching '%s' found, skipping\n", pattern)
+		progress.UpdateStatus(r.RelPath, statusSkipped, "no matching worktrees")
+		return CommandResult{RelPath: r.RelPath, Skipped: true}
+	}
+	if cmdErr != nil {
+		progress.UpdateStatus(r.RelPath, statusFailed, "worktree remove failed")
+		return CommandResult{RelPath: r.RelPath, Error: cmdErr}
+	}
+	progress.UpdateStatus(r.RelPath, statusCompleted, "")
+	return CommandResult{RelPath: r.RelPath}
+}
+
+func worktreeRemoveExact(ctx context.Context, r RepoInfo, branch string, out io.Writer, progress *ProgressState) CommandResult {
+	var wtPath string
+	if porcelain, _, listErr := executeGitCommandWithRetry(ctx, r.Path, "worktree", "list", "--porcelain"); listErr == nil {
+		for _, pair := range parseWorktreeList(string(porcelain)) {
+			if pair[0] == branch {
+				wtPath = pair[1]
+				break
+			}
+		}
+	}
+	if wtPath == "" {
+		wtPath = worktreePath(r.Path, branch)
+		if _, statErr := os.Stat(wtPath); statErr != nil {
+			altPath := filepath.Join(filepath.Dir(r.Path), branch)
+			if _, altErr := os.Stat(altPath); altErr == nil {
+				wtPath = altPath
+			}
+		}
+	}
+
+	if _, statErr := os.Stat(wtPath); statErr != nil {
+		_, _ = fmt.Fprintf(out, "No worktree found for branch '%s', skipping\n", branch)
+		progress.UpdateStatus(r.RelPath, statusSkipped, "no worktree found")
+		return CommandResult{RelPath: r.RelPath, Skipped: true}
+	}
+
+	gitOut, _, removeErr := executeGitCommandWithRetry(ctx, r.Path, "worktree", "remove", wtPath)
+	if removeErr != nil {
+		_, _ = fmt.Fprintf(out, "%s", gitOut)
+		_, _ = fmt.Fprintf(out, "git worktree remove failed: %v\n", removeErr)
+		progress.UpdateStatus(r.RelPath, statusFailed, "worktree remove failed")
+		return CommandResult{RelPath: r.RelPath, Error: removeErr}
+	}
+	_, _ = fmt.Fprintf(out, "Removed worktree: %s\n", wtPath)
+	_ = os.Remove(filepath.Dir(wtPath))
+	_ = os.Remove(filepath.Dir(filepath.Dir(wtPath)))
+	progress.UpdateStatus(r.RelPath, statusCompleted, "")
+	return CommandResult{RelPath: r.RelPath}
+}
+
+func worktreeOpen(ctx context.Context, root, branch string, workers int, cfg *Config) error {
+	repos, _ := discoverRepos(root, workers, cfg, true)
+	if repos == nil {
+		return nil
 	}
 
 	type pathResult struct {
@@ -404,40 +325,114 @@ func worktreeOpen(root, branch string, workers int, cfg *Config) {
 		exists  bool
 	}
 
-	repoCh := make(chan RepoInfo, len(repos))
-	resCh := make(chan pathResult, len(repos))
-
-	var wg sync.WaitGroup
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for r := range repoCh {
-				wtPath := worktreePath(r.Path, branch)
-				_, statErr := os.Stat(wtPath)
-				resCh <- pathResult{relPath: r.RelPath, wtPath: wtPath, exists: statErr == nil}
+	results := runPool(ctx, repos, workers, func(ctx context.Context, r RepoInfo) pathResult {
+		var wtPath string
+		if porcelain, _, listErr := executeGitCommandWithRetry(ctx, r.Path, "worktree", "list", "--porcelain"); listErr == nil {
+			for _, pair := range parseWorktreeList(string(porcelain)) {
+				if pair[0] == branch {
+					wtPath = pair[1]
+					break
+				}
 			}
-		}()
-	}
-	for _, r := range repos {
-		repoCh <- r
-	}
-	close(repoCh)
-	go func() { wg.Wait(); close(resCh) }()
+		}
+		if wtPath == "" {
+			wtPath = worktreePath(r.Path, branch)
+		}
+		_, statErr := os.Stat(wtPath)
+		return pathResult{relPath: r.RelPath, wtPath: wtPath, exists: statErr == nil}
+	})
 
-	var entries []pathResult
-	for res := range resCh {
-		entries = append(entries, res)
-	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].relPath < entries[j].relPath })
+	sort.Slice(results, func(i, j int) bool { return results[i].relPath < results[j].relPath })
 
-	for _, e := range entries {
+	for _, e := range results {
 		if e.exists {
 			fmt.Printf("%s %s\n", StyleSuccess.Render(e.relPath+":"), e.wtPath)
 		} else {
 			fmt.Printf("%s %s\n", StyleDim.Render(e.relPath+":"), StyleDim.Render("(no worktree)"))
 		}
 	}
+	return nil
+}
+
+func parseWorktreeList(output string) [][2]string {
+	var results [][2]string
+	var currentPath, currentBranch string
+
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimRight(line, "\r")
+		switch {
+		case strings.HasPrefix(line, "worktree "):
+			currentPath = strings.TrimPrefix(line, "worktree ")
+			currentBranch = ""
+		case strings.HasPrefix(line, "branch "):
+			ref := strings.TrimPrefix(line, "branch ")
+			currentBranch = strings.TrimPrefix(ref, "refs/heads/")
+		case line == "":
+			if currentPath != "" && currentBranch != "" {
+				results = append(results, [2]string{currentBranch, currentPath})
+			}
+			currentPath = ""
+			currentBranch = ""
+		}
+	}
+	if currentPath != "" && currentBranch != "" {
+		results = append(results, [2]string{currentBranch, currentPath})
+	}
+	return results
+}
+
+func gitMainWorktreePath(repoPath string) string {
+	gitPath := filepath.Join(repoPath, ".git")
+	info, err := os.Stat(gitPath)
+	if err != nil || info.IsDir() {
+		return repoPath
+	}
+	data, err := os.ReadFile(gitPath)
+	if err != nil {
+		return repoPath
+	}
+	line := strings.TrimSpace(string(data))
+	if !strings.HasPrefix(line, "gitdir: ") {
+		return repoPath
+	}
+	gitdir := strings.TrimPrefix(line, "gitdir: ")
+	if !filepath.IsAbs(gitdir) {
+		gitdir = filepath.Join(repoPath, gitdir)
+	}
+	gitdir = filepath.Clean(gitdir)
+	dir := gitdir
+	for {
+		if filepath.Base(dir) == ".git" {
+			return filepath.Dir(dir)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return repoPath
+}
+
+func deduplicateByMainWorktree(repos []RepoInfo) []RepoInfo {
+	mainPaths := make(map[string]struct{})
+	for _, r := range repos {
+		if !r.IsWorktree {
+			mainPaths[filepath.Clean(r.Path)] = struct{}{}
+		}
+	}
+	var out []RepoInfo
+	for _, r := range repos {
+		if !r.IsWorktree {
+			out = append(out, r)
+			continue
+		}
+		mainPath := filepath.Clean(gitMainWorktreePath(r.Path))
+		if _, present := mainPaths[mainPath]; !present {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 func copyFile(src, dst string) error {

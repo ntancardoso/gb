@@ -1,11 +1,11 @@
 package core
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
-	"sync"
 )
 
 type SwitchResult struct {
@@ -15,105 +15,55 @@ type SwitchResult struct {
 	Error   string
 }
 
-func switchBranches(root, target string, workers int, cfg *Config) {
-	allRepos, err := findGitRepos(root, cfg)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "Error:", err)
-		os.Exit(1)
-	}
-	if len(allRepos) == 0 {
-		fmt.Println("No repos found")
-		return
+func switchBranches(ctx context.Context, root, target string, workers int, cfg *Config) error {
+	repos, total := discoverRepos(root, workers, cfg, false)
+	if repos == nil {
+		return nil
 	}
 
-	repos := cfg.filterReposForExecution(allRepos)
-	repos = cfg.filterWorktrees(repos)
-	if len(repos) == 0 {
-		fmt.Println("No repos match the specified include/exclude criteria")
-		return
-	}
-
-	repos = cfg.filterReposByBranch(repos, workers)
-	if len(repos) == 0 {
-		fmt.Println("No repos match the specified branch criteria")
-		return
-	}
-
-	fmt.Println(StyleInfo.Render(fmt.Sprintf("Found %d repos (filtered from %d discovered), switching to %s with %d workers...", len(repos), len(allRepos), target, min(workers, len(repos)))))
+	fmt.Println(StyleInfo.Render(fmt.Sprintf("Found %d repos (filtered from %d discovered), switching to %s with %d workers...", len(repos), total, target, min(workers, len(repos)))))
 
 	logManager, err := NewLogManager()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating log manager: %s\n", err)
-		os.Exit(1)
+		return fmt.Errorf("log manager: %w", err)
 	}
 
 	progress := NewProgressState(repos, "Switching branches", cfg.PageSize)
-	progress.render()
-	progress.StartInput()
+	stop := progress.start()
 
-	repoCh := make(chan RepoInfo, len(repos))
-	resCh := make(chan SwitchResult, len(repos))
+	results := runPool(ctx, repos, workers, func(_ context.Context, r RepoInfo) SwitchResult {
+		progress.UpdateStatus(r.RelPath, statusProcessing, "")
 
-	var wg sync.WaitGroup
-
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for r := range repoCh {
-				progress.UpdateStatus(r.RelPath, statusProcessing, "")
-
-				logFile, err := logManager.CreateLogFile(r.RelPath)
-				if err != nil {
-					logFile = nil
-				}
-
-				res := processSingleRepo(r, target, cfg.Remote, logFile)
-
-				if logFile != nil {
-					_ = logFile.Close()
-				}
-
-				if res.Skipped {
-					progress.UpdateStatus(r.RelPath, statusSkipped, res.Error)
-				} else if res.Success {
-					progress.UpdateStatus(r.RelPath, statusCompleted, "")
-				} else {
-					progress.UpdateStatus(r.RelPath, statusFailed, res.Error)
-				}
-
-				resCh <- res
-			}
-		}()
-	}
-
-	go func() {
-		for _, r := range repos {
-			repoCh <- r
+		logFile, _ := logManager.CreateLogFile(r.RelPath)
+		res := processSingleRepo(r, target, cfg.Remote, logFile)
+		if logFile != nil {
+			_ = logFile.Close()
 		}
-		close(repoCh)
-	}()
 
-	go func() {
-		wg.Wait()
-		close(resCh)
-	}()
+		switch {
+		case res.Skipped:
+			progress.UpdateStatus(r.RelPath, statusSkipped, res.Error)
+		case res.Success:
+			progress.UpdateStatus(r.RelPath, statusCompleted, "")
+		default:
+			progress.UpdateStatus(r.RelPath, statusFailed, res.Error)
+		}
+		return res
+	})
 
-	var results []SwitchResult
 	var ok, fail, skip int
-	for res := range resCh {
-		results = append(results, res)
-		if res.Skipped {
+	for _, res := range results {
+		switch {
+		case res.Skipped:
 			skip++
-		} else if res.Success {
+		case res.Success:
 			ok++
-		} else {
+		default:
 			fail++
 		}
 	}
 
-	progress.RenderFinal()
-	progress.StopInput()
+	stop()
 
 	fmt.Println("\n" + StyleBold.Render("--- Summary ---"))
 	fmt.Printf("Switched %s repos to %s, %s skipped (branch in worktree), %s failed\n",
@@ -130,8 +80,9 @@ func switchBranches(root, target string, workers int, cfg *Config) {
 	}
 
 	if fail > 0 {
-		os.Exit(1)
+		return errReposFailed
 	}
+	return nil
 }
 
 func isBranchLockedInWorktree(repoPath, targetBranch string) bool {
@@ -141,8 +92,6 @@ func isBranchLockedInWorktree(repoPath, targetBranch string) bool {
 	if err != nil {
 		return false
 	}
-	// Porcelain output: blocks separated by blank lines; first block is always the main worktree.
-	// We only care about linked worktrees (blocks after the first).
 	normalized := strings.ReplaceAll(string(out), "\r\n", "\n")
 	blocks := strings.Split(strings.TrimSpace(normalized), "\n\n")
 	if len(blocks) <= 1 {
@@ -159,7 +108,7 @@ func isBranchLockedInWorktree(repoPath, targetBranch string) bool {
 }
 
 func processSingleRepo(repo RepoInfo, targetBranch, remote string, logFile *os.File) SwitchResult {
-	log := func(format string, args ...interface{}) {
+	log := func(format string, args ...any) {
 		if logFile != nil {
 			_, _ = fmt.Fprintf(logFile, format+"\n", args...)
 		}

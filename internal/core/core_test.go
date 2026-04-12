@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -72,7 +73,7 @@ func TestFindGitRepos(t *testing.T) {
 	createDir(t, filepath.Join(tmpDir, "notgit"))
 	createGitRepo(t, filepath.Join(tmpDir, "vendor", "repo3"))
 
-	cfg := mustConfig(t,defaultExcludeDirs, nil, nil, nil, 20, false, "origin")
+	cfg := mustConfig(t, defaultExcludeDirs, nil, nil, nil, 20, false, "origin")
 	repos, err := findGitRepos(tmpDir, cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -114,8 +115,8 @@ func TestListAllBranches(t *testing.T) {
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	cfg := mustConfig(t,defaultExcludeDirs, nil, nil, nil, 20, false, "origin")
-	listAllBranches(tmpDir, 2, cfg)
+	cfg := mustConfig(t, defaultExcludeDirs, nil, nil, nil, 20, false, "origin")
+	listAllBranches(context.Background(), tmpDir, 2, cfg) //nolint:errcheck
 
 	_ = w.Close()
 	os.Stdout = oldStdout
@@ -142,8 +143,8 @@ func TestSwitchBranches(t *testing.T) {
 
 	runCmd(t, repo1, "git", "checkout", "main")
 
-	cfg := mustConfig(t,defaultExcludeDirs, nil, nil, nil, 20, false, "origin")
-	switchBranches(tmpDir, "feature", 1, cfg)
+	cfg := mustConfig(t, defaultExcludeDirs, nil, nil, nil, 20, false, "origin")
+	switchBranches(context.Background(), tmpDir, "feature", 1, cfg) //nolint:errcheck
 
 	branch, err := getBranch(repo1)
 	if err != nil {
@@ -193,8 +194,8 @@ func TestExecuteCommandInRepos(t *testing.T) {
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	cfg := mustConfig(t,defaultExcludeDirs, nil, nil, nil, 20, false, "origin")
-	executeCommandInRepos(tmpDir, "status", 2, cfg)
+	cfg := mustConfig(t, defaultExcludeDirs, nil, nil, nil, 20, false, "origin")
+	executeCommandInRepos(context.Background(), tmpDir, "status", 2, cfg) //nolint:errcheck
 
 	_ = w.Close()
 	os.Stdout = oldStdout
@@ -262,8 +263,8 @@ func TestExecuteShellInRepos(t *testing.T) {
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	cfg := mustConfig(t,defaultExcludeDirs, nil, nil, nil, 20, false, "origin")
-	executeShellInRepos(tmpDir, "echo test", 2, cfg)
+	cfg := mustConfig(t, defaultExcludeDirs, nil, nil, nil, 20, false, "origin")
+	executeShellInRepos(context.Background(), tmpDir, "echo test", 2, cfg) //nolint:errcheck
 
 	_ = w.Close()
 	os.Stdout = oldStdout
@@ -282,12 +283,13 @@ func TestExecuteShellInRepos(t *testing.T) {
 }
 
 func TestRun(t *testing.T) {
-	err := Run([]string{"-list"})
+	ctx := context.Background()
+	err := Run(ctx, []string{"-list"})
 	if err != nil {
 		t.Errorf("list command failed: %v", err)
 	}
 
-	err = Run([]string{})
+	err = Run(ctx, []string{})
 	if err == nil {
 		t.Error("expected error for missing branch name")
 	}
@@ -299,16 +301,16 @@ func TestRun(t *testing.T) {
 
 	createGitRepo(t, filepath.Join(tmpDir, "repo1"))
 
-	_ = Run([]string{"main"})
+	_ = Run(ctx, []string{"main"})
 
-	_ = Run([]string{"-c", "status"})
+	_ = Run(ctx, []string{"-c", "status"})
 
-	_ = Run([]string{"-sh", "echo test"})
+	_ = Run(ctx, []string{"-sh", "echo test"})
 }
 
 func TestConfigExcludeSet(t *testing.T) {
 	dirs := []string{"node_modules", "vendor", ".git"}
-	cfg := mustConfig(t,dirs, nil, nil, nil, 20, false, "origin")
+	cfg := mustConfig(t, dirs, nil, nil, nil, 20, false, "origin")
 
 	if len(cfg.excludeSet) != 3 {
 		t.Errorf("expected 3 items, got %d", len(cfg.excludeSet))
@@ -320,7 +322,7 @@ func TestConfigExcludeSet(t *testing.T) {
 }
 
 func TestConfigShouldExcludeDir(t *testing.T) {
-	cfg := mustConfig(t,defaultExcludeDirs, []string{"vendor"}, nil, nil, 20, false, "origin")
+	cfg := mustConfig(t, defaultExcludeDirs, []string{"vendor"}, nil, nil, 20, false, "origin")
 
 	if !cfg.shouldExcludeDir(".hidden") {
 		t.Error("should exclude .hidden")
@@ -678,7 +680,7 @@ func TestFilterWorktrees(t *testing.T) {
 	}
 
 	t.Run("excludes worktrees by default", func(t *testing.T) {
-		cfg := mustConfig(t,nil, nil, nil, nil, 20, false, "origin")
+		cfg := mustConfig(t, nil, nil, nil, nil, 20, false, "origin")
 		filtered := cfg.filterWorktrees(repos)
 		if len(filtered) != 2 {
 			t.Fatalf("expected 2 repos, got %d", len(filtered))
@@ -691,7 +693,7 @@ func TestFilterWorktrees(t *testing.T) {
 	})
 
 	t.Run("includes worktrees when flag set", func(t *testing.T) {
-		cfg := mustConfig(t,nil, nil, nil, nil, 20, true, "origin")
+		cfg := mustConfig(t, nil, nil, nil, nil, 20, true, "origin")
 		filtered := cfg.filterWorktrees(repos)
 		if len(filtered) != 4 {
 			t.Fatalf("expected 4 repos, got %d", len(filtered))
@@ -713,7 +715,7 @@ func TestIsWorktreeDetection(t *testing.T) {
 	wtPath := filepath.Join(tmpDir, "linked-wt")
 	runCmd(t, mainRepo, "git", "worktree", "add", wtPath, "wt-branch")
 
-	cfg := mustConfig(t,defaultExcludeDirs, nil, nil, nil, 20, false, "origin")
+	cfg := mustConfig(t, defaultExcludeDirs, nil, nil, nil, 20, false, "origin")
 	repos, err := findGitRepos(tmpDir, cfg)
 	if err != nil {
 		t.Fatal(err)

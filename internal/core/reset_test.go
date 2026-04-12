@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -8,10 +9,6 @@ import (
 	"testing"
 )
 
-// --- helpers ---
-
-// makeRepoWithRemote creates a local repo wired to a local bare remote.
-// The initial commit is pushed so origin/main exists.
 func makeRepoWithRemote(t *testing.T) (repoDir, remoteDir string) {
 	t.Helper()
 	remoteDir = t.TempDir()
@@ -25,8 +22,6 @@ func makeRepoWithRemote(t *testing.T) (repoDir, remoteDir string) {
 	return
 }
 
-// makeRepoAheadOfOrigin builds on makeRepoWithRemote and adds one local
-// commit that has NOT been pushed, so local is one ahead of origin/main.
 func makeRepoAheadOfOrigin(t *testing.T) (repoDir, remoteDir string) {
 	t.Helper()
 	repoDir, remoteDir = makeRepoWithRemote(t)
@@ -37,15 +32,12 @@ func makeRepoAheadOfOrigin(t *testing.T) (repoDir, remoteDir string) {
 	return
 }
 
-// makeRepoWithConflict creates a repo and a remote where local main and
-// origin/main have diverged on "conflict.txt", guaranteeing a rebase conflict.
 func makeRepoWithConflict(t *testing.T) (repoDir, remoteDir string) {
 	t.Helper()
 	remoteDir = t.TempDir()
 	repoDir = t.TempDir()
 	otherDir := t.TempDir()
 
-	// Base: bare remote + working repo with an initial commit that includes conflict.txt.
 	runCmd(t, remoteDir, "git", "init", "--bare", "-b", "main")
 	createGitRepo(t, repoDir)
 	writeFile(t, repoDir, "conflict.txt", "base\n")
@@ -54,7 +46,6 @@ func makeRepoWithConflict(t *testing.T) (repoDir, remoteDir string) {
 	runCmd(t, repoDir, "git", "remote", "add", "origin", remoteDir)
 	runCmd(t, repoDir, "git", "push", "origin", "main")
 
-	// Another clone pushes a conflicting change to origin.
 	runCmd(t, otherDir, "git", "init", "-b", "main")
 	runCmd(t, otherDir, "git", "config", "user.name", "test")
 	runCmd(t, otherDir, "git", "config", "user.email", "test@test.com")
@@ -66,7 +57,6 @@ func makeRepoWithConflict(t *testing.T) (repoDir, remoteDir string) {
 	runCmd(t, otherDir, "git", "commit", "-m", "origin conflicting change")
 	runCmd(t, otherDir, "git", "push", "origin", "main")
 
-	// repoDir fetches (so origin/main ref is updated) then makes its own diverging commit.
 	runCmd(t, repoDir, "git", "fetch", "origin")
 	writeFile(t, repoDir, "conflict.txt", "local version\n")
 	runCmd(t, repoDir, "git", "add", "conflict.txt")
@@ -74,8 +64,6 @@ func makeRepoWithConflict(t *testing.T) (repoDir, remoteDir string) {
 
 	return
 }
-
-// --- helper checks ---
 
 func TestCheckRemoteExists(t *testing.T) {
 	t.Run("no origin", func(t *testing.T) {
@@ -97,12 +85,11 @@ func TestCheckRemoteExists(t *testing.T) {
 func TestResolveRemoteAndBranch(t *testing.T) {
 	repoDir, remoteDir := makeRepoWithRemote(t)
 
-	// Add a second remote named "upstream".
 	upstream := t.TempDir()
 	runCmd(t, upstream, "git", "init", "--bare", "-b", "main")
 	runCmd(t, repoDir, "git", "remote", "add", "upstream", upstream)
 
-	_ = remoteDir // used via makeRepoWithRemote
+	_ = remoteDir
 
 	cases := []struct {
 		branchArg     string
@@ -110,24 +97,19 @@ func TestResolveRemoteAndBranch(t *testing.T) {
 		wantRemote    string
 		wantBranch    string
 	}{
-		// bare branch names
 		{"main", "origin", "origin", "main"},
 		{"main", "upstream", "upstream", "main"},
 
-		// inline remote prefix
 		{"origin/main", "origin", "origin", "main"},
 		{"upstream/main", "origin", "upstream", "main"},
 
-		// inline remote with slashed branch name
 		{"origin/feat/branch1", "origin", "origin", "feat/branch1"},
 		{"upstream/release/v1.0", "origin", "upstream", "release/v1.0"},
 
-		// slashed branch name with NO matching remote — uses defaultRemote
 		{"feat/branch1", "origin", "origin", "feat/branch1"},
 		{"feat/branch1", "upstream", "upstream", "feat/branch1"},
 		{"release/v1.0", "origin", "origin", "release/v1.0"},
 
-		// unknown remote prefix — treated as branch name
 		{"noremote/main", "origin", "origin", "noremote/main"},
 	}
 
@@ -316,9 +298,6 @@ func TestCheckRebaseInProgress(t *testing.T) {
 }
 
 func TestGetDirtyStatus(t *testing.T) {
-	// Each sub-test uses its own repo to avoid shared-state ordering issues
-	// and to sidestep CRLF normalization behaviour on Windows (which can make
-	// modifications to tracked files appear staged rather than unstaged).
 
 	t.Run("clean", func(t *testing.T) {
 		tmpDir := t.TempDir()
@@ -331,7 +310,6 @@ func TestGetDirtyStatus(t *testing.T) {
 	t.Run("unstaged changes (untracked file)", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		createGitRepo(t, tmpDir)
-		// An untracked file shows as "??" in porcelain — unambiguous on all platforms.
 		writeFile(t, tmpDir, "untracked.txt", "new content")
 		if status := getDirtyStatus(tmpDir); status != "unstaged changes" {
 			t.Errorf("expected 'unstaged changes', got %q", status)
@@ -359,8 +337,6 @@ func TestGetDirtyStatus(t *testing.T) {
 		}
 	})
 }
-
-// --- processSingleReset: skip scenarios ---
 
 func TestProcessSingleResetSkipNoOrigin(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -431,7 +407,6 @@ func TestProcessSingleResetSkipBranchNotOnOrigin(t *testing.T) {
 
 func TestProcessSingleResetSkipAlreadyAtTarget(t *testing.T) {
 	repoDir, _ := makeRepoWithRemote(t)
-	// local HEAD == origin/main — no local commits ahead
 
 	repo := RepoInfo{Path: repoDir, RelPath: "test"}
 	res := processSingleReset(repo, "main", "soft", "origin", nil)
@@ -444,11 +419,8 @@ func TestProcessSingleResetSkipAlreadyAtTarget(t *testing.T) {
 	}
 }
 
-// --- processSingleReset: soft reset ---
-
 func TestProcessSingleResetSoftMovesHEAD(t *testing.T) {
 	repoDir, _ := makeRepoAheadOfOrigin(t)
-	// local has one commit ahead of origin/main
 
 	repo := RepoInfo{Path: repoDir, RelPath: "test"}
 	res := processSingleReset(repo, "main", "soft", "origin", nil)
@@ -457,12 +429,10 @@ func TestProcessSingleResetSoftMovesHEAD(t *testing.T) {
 		t.Fatalf("expected Success=true, got error: %q", res.Error)
 	}
 
-	// HEAD should now equal origin/main
 	if !checkAlreadyAtTarget(repoDir, "main", "origin") {
 		t.Error("expected HEAD to be at origin/main after soft reset")
 	}
 
-	// local.txt (from the local commit) should be staged
 	stagedOut := runCmdOutput(t, repoDir, "git", "diff", "--cached", "--name-only")
 	if !strings.Contains(string(stagedOut), "local.txt") {
 		t.Errorf("expected local.txt staged after soft reset, got: %s", string(stagedOut))
@@ -472,7 +442,6 @@ func TestProcessSingleResetSoftMovesHEAD(t *testing.T) {
 func TestProcessSingleResetSoftWarnsStagedChanges(t *testing.T) {
 	repoDir, _ := makeRepoAheadOfOrigin(t)
 
-	// Stage an extra change on top of the local commit
 	writeFile(t, repoDir, "extra.txt", "extra staged content")
 	runCmd(t, repoDir, "git", "add", "extra.txt")
 
@@ -487,8 +456,6 @@ func TestProcessSingleResetSoftWarnsStagedChanges(t *testing.T) {
 	}
 }
 
-// --- processSingleReset: hard reset ---
-
 func TestProcessSingleResetHardDiscardsChanges(t *testing.T) {
 	repoDir, _ := makeRepoAheadOfOrigin(t)
 
@@ -499,12 +466,10 @@ func TestProcessSingleResetHardDiscardsChanges(t *testing.T) {
 		t.Fatalf("expected Success=true, got error: %q", res.Error)
 	}
 
-	// HEAD should be at origin/main
 	if !checkAlreadyAtTarget(repoDir, "main", "origin") {
 		t.Error("expected HEAD to be at origin/main after hard reset")
 	}
 
-	// local.txt was part of the local commit — it should be gone
 	if _, err := os.Stat(filepath.Join(repoDir, "local.txt")); !os.IsNotExist(err) {
 		t.Error("expected local.txt to be removed after hard reset")
 	}
@@ -513,7 +478,6 @@ func TestProcessSingleResetHardDiscardsChanges(t *testing.T) {
 func TestProcessSingleResetHardSkipsMidMerge(t *testing.T) {
 	repoDir, _ := makeRepoAheadOfOrigin(t)
 
-	// Fake a mid-merge state
 	mergeHead := filepath.Join(repoDir, ".git", "MERGE_HEAD")
 	if err := os.WriteFile(mergeHead, []byte("abc123\n"), 0644); err != nil {
 		t.Fatal(err)
@@ -530,11 +494,8 @@ func TestProcessSingleResetHardSkipsMidMerge(t *testing.T) {
 	}
 }
 
-// --- processSingleReset: rebase ---
-
 func TestProcessSingleResetRebaseHappyPath(t *testing.T) {
 	repoDir, _ := makeRepoAheadOfOrigin(t)
-	// local = origin/main + one extra commit; rebase is a no-conflict fast-forward
 
 	repo := RepoInfo{Path: repoDir, RelPath: "test"}
 	res := processSingleReset(repo, "main", "rebase", "origin", nil)
@@ -543,7 +504,6 @@ func TestProcessSingleResetRebaseHappyPath(t *testing.T) {
 		t.Fatalf("expected Success=true, got error: %q", res.Error)
 	}
 
-	// No rebase in progress after success
 	if checkRebaseInProgress(repoDir) {
 		t.Error("expected no rebase dir after successful rebase")
 	}
@@ -552,7 +512,6 @@ func TestProcessSingleResetRebaseHappyPath(t *testing.T) {
 func TestProcessSingleResetRebaseFailsDirtyTree(t *testing.T) {
 	repoDir, _ := makeRepoAheadOfOrigin(t)
 
-	// Add an uncommitted/untracked file to make working tree dirty
 	writeFile(t, repoDir, "dirty.txt", "dirty")
 
 	repo := RepoInfo{Path: repoDir, RelPath: "test"}
@@ -569,7 +528,6 @@ func TestProcessSingleResetRebaseFailsDirtyTree(t *testing.T) {
 func TestProcessSingleResetRebaseSkipsIfInProgress(t *testing.T) {
 	repoDir, _ := makeRepoAheadOfOrigin(t)
 
-	// Fake a rebase-in-progress state
 	rebaseMerge := filepath.Join(repoDir, ".git", "rebase-merge")
 	if err := os.MkdirAll(rebaseMerge, 0755); err != nil {
 		t.Fatal(err)
@@ -586,12 +544,9 @@ func TestProcessSingleResetRebaseSkipsIfInProgress(t *testing.T) {
 	}
 }
 
-// --- processSingleReset: current branch must not change ---
-
 func TestProcessSingleResetStaysOnCurrentBranch(t *testing.T) {
 	repoDir, remoteDir := makeRepoWithRemote(t)
 
-	// Push a new commit to origin/main via another clone so origin/main is ahead.
 	otherDir := t.TempDir()
 	runCmd(t, otherDir, "git", "init", "-b", "main")
 	runCmd(t, otherDir, "git", "config", "user.name", "test")
@@ -604,7 +559,6 @@ func TestProcessSingleResetStaysOnCurrentBranch(t *testing.T) {
 	runCmd(t, otherDir, "git", "commit", "-m", "new origin commit")
 	runCmd(t, otherDir, "git", "push", "origin", "main")
 
-	// Create and switch to a feature branch — the operation must NOT switch away.
 	runCmd(t, repoDir, "git", "checkout", "-b", "feat/my-task")
 
 	repo := RepoInfo{Path: repoDir, RelPath: "test"}
@@ -622,17 +576,13 @@ func TestProcessSingleResetStaysOnCurrentBranch(t *testing.T) {
 		t.Errorf("expected current branch to remain 'feat/my-task', got %q", current)
 	}
 
-	// Hard reset brought origin/main's content to feat/my-task.
 	if _, statErr := os.Stat(filepath.Join(repoDir, "from-origin.txt")); os.IsNotExist(statErr) {
 		t.Error("expected from-origin.txt to exist after hard reset to origin/main")
 	}
 }
 
-// --- processSingleReset: rebase conflict ---
-
 func TestProcessSingleResetRebaseConflict(t *testing.T) {
 	repoDir, _ := makeRepoWithConflict(t)
-	// local main and origin/main diverge on conflict.txt → rebase must conflict
 
 	repo := RepoInfo{Path: repoDir, RelPath: "test"}
 	res := processSingleReset(repo, "main", "rebase", "origin", nil)
@@ -643,30 +593,22 @@ func TestProcessSingleResetRebaseConflict(t *testing.T) {
 	if !strings.Contains(res.Error, "conflict during rebase") {
 		t.Errorf("expected conflict error, got %q", res.Error)
 	}
-	// Rebase should have been aborted — no lingering rebase state.
 	if checkRebaseInProgress(repoDir) {
 		t.Error("expected no rebase in progress after abort")
 	}
 }
 
-// --- processSingleReset: fetch when already on branch (Bug 1 fix) ---
-
 func TestProcessSingleResetFetchWhenAlreadyOnBranch(t *testing.T) {
-	// Scenario: repoDir is on main and its local origin/main ref is stale (another
-	// clone pushed a new commit to the remote that repoDir hasn't fetched yet).
-	// processSingleReset should fetch first so the origin ref is fresh, then reset.
 	remoteDir := t.TempDir()
 	repoDir := t.TempDir()
 	otherDir := t.TempDir()
 
-	// Initial setup: bare remote + working repo, synced.
 	runCmd(t, remoteDir, "git", "init", "--bare", "-b", "main")
 	createGitRepo(t, repoDir)
 	runCmd(t, repoDir, "git", "remote", "add", "origin", remoteDir)
 	runCmd(t, repoDir, "git", "push", "origin", "main")
-	runCmd(t, repoDir, "git", "fetch", "origin") // local origin/main ref = C0
+	runCmd(t, repoDir, "git", "fetch", "origin")
 
-	// Another clone pushes a new commit — repoDir does NOT fetch.
 	runCmd(t, otherDir, "git", "init", "-b", "main")
 	runCmd(t, otherDir, "git", "config", "user.name", "test")
 	runCmd(t, otherDir, "git", "config", "user.email", "test@test.com")
@@ -677,26 +619,19 @@ func TestProcessSingleResetFetchWhenAlreadyOnBranch(t *testing.T) {
 	runCmd(t, otherDir, "git", "add", ".")
 	runCmd(t, otherDir, "git", "commit", "-m", "new remote commit")
 	runCmd(t, otherDir, "git", "push", "origin", "main")
-	// repoDir's local origin/main ref is now stale (still C0, not the new push).
 
 	repo := RepoInfo{Path: repoDir, RelPath: "test"}
 	res := processSingleReset(repo, "main", "soft", "origin", nil)
 
-	// Without the fetch fix, checkAlreadyAtTarget would compare HEAD(C0) == stale
-	// origin/main(C0) and return true → skip. With the fix, fetch updates origin/main
-	// to the new commit → not equal → soft reset runs → success.
 	if !res.Success {
 		t.Fatalf("expected Success=true (should fetch then reset), got error=%q skipped=%v reason=%q",
 			res.Error, res.Skipped, res.SkipReason)
 	}
 
-	// HEAD should now be at the new remote commit.
 	if !checkAlreadyAtTarget(repoDir, "main", "origin") {
 		t.Error("expected HEAD to be at origin/main after soft reset")
 	}
 }
-
-// --- syncBranch (soft mode, no TTY guard) ---
 
 func TestSyncBranchSoft(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -712,13 +647,12 @@ func TestSyncBranchSoft(t *testing.T) {
 	runCmd(t, repoDir, "git", "add", ".")
 	runCmd(t, repoDir, "git", "commit", "-m", "local commit ahead of origin")
 
-	// Redirect stdout to capture output
 	oldStdout := os.Stdout
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
 	cfg := mustConfig(t, defaultExcludeDirs, nil, nil, nil, 20, false, "origin")
-	syncBranch(tmpDir, "main", "soft", 2, cfg)
+	syncBranch(context.Background(), tmpDir, "main", "soft", 2, cfg) //nolint:errcheck
 
 	_ = w.Close()
 	os.Stdout = oldStdout
@@ -731,8 +665,6 @@ func TestSyncBranchSoft(t *testing.T) {
 	}
 }
 
-// TestRunResetSoftFlag verifies that Run() parses -rs and dispatches to syncBranch.
-// An empty directory is used so syncBranch returns early with "No repos found".
 func TestRunResetSoftFlag(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -749,7 +681,7 @@ func TestRunResetSoftFlag(t *testing.T) {
 	_, w, _ := os.Pipe()
 	os.Stdout = w
 
-	runErr := Run([]string{"-rs", "main"})
+	runErr := Run(context.Background(), []string{"-rs", "main"})
 
 	_ = w.Close()
 	os.Stdout = oldStdout
@@ -759,12 +691,9 @@ func TestRunResetSoftFlag(t *testing.T) {
 	}
 }
 
-// TestSyncBranchSoftMixedOutcomes verifies the summary counts when some repos
-// succeed and some are skipped (already up to date).
 func TestSyncBranchSoftMixedOutcomes(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// repo-ahead: one local commit not pushed → soft reset will succeed
 	remote1 := t.TempDir()
 	repo1Dir := filepath.Join(tmpDir, "repo-ahead")
 	if err := os.MkdirAll(repo1Dir, 0755); err != nil {
@@ -779,7 +708,6 @@ func TestSyncBranchSoftMixedOutcomes(t *testing.T) {
 	runCmd(t, repo1Dir, "git", "add", ".")
 	runCmd(t, repo1Dir, "git", "commit", "-m", "local ahead")
 
-	// repo-synced: exactly at origin/main → will be skipped
 	remote2 := t.TempDir()
 	repo2Dir := filepath.Join(tmpDir, "repo-synced")
 	if err := os.MkdirAll(repo2Dir, 0755); err != nil {
@@ -796,7 +724,7 @@ func TestSyncBranchSoftMixedOutcomes(t *testing.T) {
 	os.Stdout = pw
 
 	cfg := mustConfig(t, defaultExcludeDirs, nil, nil, nil, 20, false, "origin")
-	syncBranch(tmpDir, "main", "soft", 2, cfg)
+	syncBranch(context.Background(), tmpDir, "main", "soft", 2, cfg) //nolint:errcheck
 
 	_ = pw.Close()
 	os.Stdout = oldStdout

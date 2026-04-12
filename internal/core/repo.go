@@ -17,16 +17,11 @@ type RepoInfo struct {
 
 func resolveRoot(root string) string {
 	if realRoot, err := filepath.EvalSymlinks(root); err == nil && realRoot != root {
-		fmt.Printf("Resolved symlink to: %s\n", realRoot)
 		return realRoot
 	}
 
 	if target, err := os.Readlink(root); err == nil {
-		resolved := resolveSymlinkTarget(root, target)
-		if resolved != root {
-			fmt.Printf("Resolved symlink to: %s\n", resolved)
-		}
-		return resolved
+		return resolveSymlinkTarget(root, target)
 	}
 
 	return root
@@ -45,6 +40,13 @@ func resolveSymlinkTarget(root, target string) string {
 	return target
 }
 
+var performanceExcludeDirs = map[string]struct{}{
+	"node_modules": {}, "vendor": {}, "__pycache__": {}, ".pytest_cache": {},
+	"build": {}, "dist": {}, "out": {}, "target": {}, "bin": {}, "obj": {},
+	".next": {}, "coverage": {}, ".nyc_output": {}, ".tox": {},
+	".venv": {}, "venv": {}, ".env": {}, "env": {},
+}
+
 func (cfg *Config) shouldExcludeDir(name string) bool {
 	if _, included := cfg.includeSet[name]; included {
 		return false
@@ -54,25 +56,42 @@ func (cfg *Config) shouldExcludeDir(name string) bool {
 		return true
 	}
 
-	performanceExcludeDirs := []string{
-		"node_modules", "vendor", "__pycache__", ".pytest_cache",
-		"build", "dist", "out", "target", "bin", "obj",
-		".next", "coverage", ".nyc_output", ".tox",
-		".venv", "venv", ".env", "env",
-	}
-
-	for _, excludeDir := range performanceExcludeDirs {
-		if name == excludeDir {
-			return true
-		}
-	}
-
-	return false
+	_, excluded := performanceExcludeDirs[name]
+	return excluded
 }
 
 const (
 	progressUpdateInterval = 500 * time.Millisecond
 )
+
+func discoverRepos(root string, workers int, cfg *Config, worktreeCmd bool) ([]RepoInfo, int) {
+	fmt.Printf("Discovering repos in %s...\n", root)
+	allRepos, err := findGitRepos(root, cfg)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error:", err)
+		return nil, 0
+	}
+	if len(allRepos) == 0 {
+		fmt.Println("No repos found")
+		return nil, 0
+	}
+	repos := cfg.filterReposForExecution(allRepos)
+	if worktreeCmd {
+		repos = deduplicateByMainWorktree(repos)
+	} else {
+		repos = cfg.filterWorktrees(repos)
+	}
+	if len(repos) == 0 {
+		fmt.Println("No repos match the specified include/exclude criteria")
+		return nil, 0
+	}
+	repos = cfg.filterReposByBranch(repos, workers)
+	if len(repos) == 0 {
+		fmt.Println("No repos match the specified branch criteria")
+		return nil, 0
+	}
+	return repos, len(allRepos)
+}
 
 func findGitRepos(root string, cfg *Config) ([]RepoInfo, error) {
 	scanner := &repoScanner{

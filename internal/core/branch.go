@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -19,6 +20,8 @@ const (
 	maxRetries           = 3
 	retryDelay           = 2 * time.Second
 )
+
+var errReposFailed = errors.New("one or more repos failed")
 
 type BranchResult struct {
 	RelPath string
@@ -38,7 +41,7 @@ func executeGitCommandWithRetry(ctx context.Context, dir string, args ...string)
 	var lastErr error
 	var output []byte
 
-	for attempt := 0; attempt < maxRetries; attempt++ {
+	for attempt := range maxRetries {
 		cmdCtx, cancel := context.WithTimeout(ctx, gitCommandTimeout)
 		cmd := exec.CommandContext(cmdCtx, "git", args...)
 		cmd.Dir = dir
@@ -66,7 +69,7 @@ func executeGitCommandWithRetry(ctx context.Context, dir string, args ...string)
 func executeGitCommandWithRetryToFile(ctx context.Context, dir string, logFile *os.File, args ...string) (int, error) {
 	var lastErr error
 
-	for attempt := 0; attempt < maxRetries; attempt++ {
+	for attempt := range maxRetries {
 		cmdCtx, cancel := context.WithTimeout(ctx, gitCommandTimeout)
 		cmd := exec.CommandContext(cmdCtx, "git", args...)
 		cmd.Dir = dir
@@ -150,7 +153,8 @@ func getBranch(path string) (string, error) {
 }
 
 func (cfg *Config) filterReposByBranch(repos []RepoInfo, workers int) []RepoInfo {
-	if len(cfg.includeBranchSet) == 0 && len(cfg.excludeBranchSet) == 0 {
+	if len(cfg.includeBranchSet) == 0 && len(cfg.excludeBranchSet) == 0 &&
+		len(cfg.includeBranchPats) == 0 && len(cfg.excludeBranchPats) == 0 {
 		return repos
 	}
 
@@ -163,15 +167,13 @@ func (cfg *Config) filterReposByBranch(repos []RepoInfo, workers int) []RepoInfo
 	resCh := make(chan result, len(repos))
 
 	var wg sync.WaitGroup
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range workers {
+		wg.Go(func() {
 			for r := range repoCh {
 				branch, _ := getBranch(r.Path)
 				resCh <- result{repo: r, branch: branch}
 			}
-		}()
+		})
 	}
 	for _, r := range repos {
 		repoCh <- r
@@ -188,60 +190,21 @@ func (cfg *Config) filterReposByBranch(repos []RepoInfo, workers int) []RepoInfo
 	return filtered
 }
 
-func listAllBranches(root string, workers int, cfg *Config) {
-	fmt.Printf("Discovering repos in %s...\n", root)
-	allRepos, err := findGitRepos(root, cfg)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "Error:", err)
-		os.Exit(1)
-	}
-	if len(allRepos) == 0 {
-		fmt.Println("No repos found")
-		return
+func listAllBranches(ctx context.Context, root string, workers int, cfg *Config) error {
+	repos, total := discoverRepos(root, workers, cfg, false)
+	if repos == nil {
+		return nil
 	}
 
-	repos := cfg.filterReposForExecution(allRepos)
-	repos = cfg.filterWorktrees(repos)
-	if len(repos) == 0 {
-		fmt.Println("No repos match the specified include/exclude criteria")
-		return
-	}
+	fmt.Println(StyleInfo.Render(fmt.Sprintf("Listing branches in %d repos (filtered from %d discovered)...", len(repos), total)))
 
-	repos = cfg.filterReposByBranch(repos, workers)
-	if len(repos) == 0 {
-		fmt.Println("No repos match the specified branch criteria")
-		return
-	}
-
-	fmt.Println(StyleInfo.Render(fmt.Sprintf("Listing branches in %d repos (filtered from %d discovered)...", len(repos), len(allRepos))))
-
-	repoCh := make(chan RepoInfo, len(repos))
-	resCh := make(chan BranchResult, len(repos))
-
-	var wg sync.WaitGroup
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for r := range repoCh {
-				branch, err := getBranch(r.Path)
-				resCh <- BranchResult{RelPath: r.RelPath, Branch: branch, Error: err}
-			}
-		}()
-	}
-	go func() {
-		for _, r := range repos {
-			repoCh <- r
-		}
-		close(repoCh)
-	}()
-	go func() {
-		wg.Wait()
-		close(resCh)
-	}()
+	results := runPool(ctx, repos, workers, func(_ context.Context, r RepoInfo) BranchResult {
+		branch, err := getBranch(r.Path)
+		return BranchResult{RelPath: r.RelPath, Branch: branch, Error: err}
+	})
 
 	branchRepos := make(map[string][]string)
-	for res := range resCh {
+	for _, res := range results {
 		key := res.Branch
 		if res.Error != nil {
 			key = "error"
@@ -249,7 +212,7 @@ func listAllBranches(root string, workers int, cfg *Config) {
 		branchRepos[key] = append(branchRepos[key], res.RelPath)
 	}
 
-	var branches []string
+	branches := make([]string, 0, len(branchRepos))
 	for b := range branchRepos {
 		branches = append(branches, b)
 	}
@@ -264,131 +227,50 @@ func listAllBranches(root string, workers int, cfg *Config) {
 		}
 		fmt.Println(StyleDim.Render("================="))
 	}
+	return nil
 }
 
-func executeCommandInRepos(root, command string, workers int, cfg *Config) {
-	fmt.Printf("Discovering repos in %s...\n", root)
-	allRepos, err := findGitRepos(root, cfg)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "Error:", err)
-		os.Exit(1)
-	}
-	if len(allRepos) == 0 {
-		fmt.Println("No repos found")
-		return
-	}
-
-	repos := cfg.filterReposForExecution(allRepos)
-	repos = cfg.filterWorktrees(repos)
-	if len(repos) == 0 {
-		fmt.Println("No repos match the specified include/exclude criteria")
-		return
-	}
-
-	repos = cfg.filterReposByBranch(repos, workers)
-	if len(repos) == 0 {
-		fmt.Println("No repos match the specified branch criteria")
-		return
+func executeCommandInRepos(ctx context.Context, root, command string, workers int, cfg *Config) error {
+	repos, total := discoverRepos(root, workers, cfg, false)
+	if repos == nil {
+		return nil
 	}
 
 	args := strings.Fields(command)
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "Error: Empty command")
-		os.Exit(1)
+		return fmt.Errorf("empty command")
 	}
 
 	fmt.Println(StyleInfo.Render(fmt.Sprintf("Found %d repos (filtered from %d discovered), executing 'git %s' with %d workers...",
-		len(repos), len(allRepos), command, min(workers, len(repos)))))
+		len(repos), total, command, min(workers, len(repos)))))
 
 	logManager, err := NewLogManager()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating log manager: %s\n", err)
-		os.Exit(1)
+		return fmt.Errorf("log manager: %w", err)
 	}
 
 	progress := NewProgressState(repos, fmt.Sprintf("Executing 'git %s'", command), cfg.PageSize)
-	progress.render()
-	progress.StartInput()
+	stop := progress.start()
 
-	repoCh := make(chan RepoInfo, len(repos))
-	resCh := make(chan CommandResult, len(repos))
+	results := runPool(ctx, repos, workers, func(ctx context.Context, r RepoInfo) CommandResult {
+		progress.UpdateStatus(r.RelPath, statusProcessing, "")
 
-	var wg sync.WaitGroup
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for r := range repoCh {
-
-				progress.UpdateStatus(r.RelPath, statusProcessing, "")
-
-				logFile, err := logManager.CreateLogFile(r.RelPath)
-				var retries int
-				var cmdErr error
-
-				if err != nil {
-
-					output, retries, cmdErr := executeGitCommandWithRetry(context.Background(), r.Path, args...)
-					result := CommandResult{
-						RelPath: r.RelPath,
-						Output:  string(output),
-						Error:   cmdErr,
-						Retries: retries,
-					}
-
-					if cmdErr != nil {
-						errorMsg := cmdErr.Error()
-						if len(errorMsg) > 50 {
-							errorMsg = errorMsg[:50] + "..."
-						}
-						progress.UpdateStatus(r.RelPath, statusFailed, errorMsg)
-					} else {
-						progress.UpdateStatus(r.RelPath, statusCompleted, "")
-					}
-
-					resCh <- result
-				} else {
-
-					retries, cmdErr = executeGitCommandWithRetryToFile(context.Background(), r.Path, logFile, args...)
-					_ = logFile.Close()
-
-					result := CommandResult{
-						RelPath: r.RelPath,
-						Output:  "",
-						Error:   cmdErr,
-						Retries: retries,
-					}
-
-					if cmdErr != nil {
-						errorMsg := cmdErr.Error()
-						if len(errorMsg) > 50 {
-							errorMsg = errorMsg[:50] + "..."
-						}
-						progress.UpdateStatus(r.RelPath, statusFailed, errorMsg)
-					} else {
-						progress.UpdateStatus(r.RelPath, statusCompleted, "")
-					}
-
-					resCh <- result
-				}
-			}
-		}()
-	}
-	go func() {
-		for _, r := range repos {
-			repoCh <- r
+		logFile, logErr := logManager.CreateLogFile(r.RelPath)
+		if logErr != nil {
+			output, retries, cmdErr := executeGitCommandWithRetry(ctx, r.Path, args...)
+			st, msg := progressStatusFromErr(cmdErr)
+			progress.UpdateStatus(r.RelPath, st, msg)
+			return CommandResult{RelPath: r.RelPath, Output: string(output), Error: cmdErr, Retries: retries}
 		}
-		close(repoCh)
-	}()
-	go func() {
-		wg.Wait()
-		close(resCh)
-	}()
+		retries, cmdErr := executeGitCommandWithRetryToFile(ctx, r.Path, logFile, args...)
+		_ = logFile.Close()
+		st, msg := progressStatusFromErr(cmdErr)
+		progress.UpdateStatus(r.RelPath, st, msg)
+		return CommandResult{RelPath: r.RelPath, Error: cmdErr, Retries: retries}
+	})
 
-	var results []CommandResult
 	success, failed := 0, 0
-	for res := range resCh {
-		results = append(results, res)
+	for _, res := range results {
 		if res.Error != nil {
 			failed++
 		} else {
@@ -396,8 +278,7 @@ func executeCommandInRepos(root, command string, workers int, cfg *Config) {
 		}
 	}
 
-	progress.RenderFinal()
-	progress.StopInput()
+	stop()
 
 	fmt.Println("\n" + StyleBold.Render("--- Summary ---"))
 	fmt.Printf("Executed 'git %s' in %d repos: %s succeeded, %s failed\n",
@@ -413,139 +294,60 @@ func executeCommandInRepos(root, command string, workers int, cfg *Config) {
 	}
 
 	if failed > 0 {
-		os.Exit(1)
+		return errReposFailed
 	}
+	return nil
 }
 
-func executeShellInRepos(root, command string, workers int, cfg *Config) {
-	fmt.Printf("Discovering repos in %s...\n", root)
-	allRepos, err := findGitRepos(root, cfg)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "Error:", err)
-		os.Exit(1)
-	}
-	if len(allRepos) == 0 {
-		fmt.Println("No repos found")
-		return
-	}
-
-	repos := cfg.filterReposForExecution(allRepos)
-	repos = cfg.filterWorktrees(repos)
-	if len(repos) == 0 {
-		fmt.Println("No repos match the specified include/exclude criteria")
-		return
-	}
-
-	repos = cfg.filterReposByBranch(repos, workers)
-	if len(repos) == 0 {
-		fmt.Println("No repos match the specified branch criteria")
-		return
+func executeShellInRepos(ctx context.Context, root, command string, workers int, cfg *Config) error {
+	repos, total := discoverRepos(root, workers, cfg, false)
+	if repos == nil {
+		return nil
 	}
 
 	if strings.TrimSpace(command) == "" {
-		fmt.Fprintln(os.Stderr, "Error: Empty command")
-		os.Exit(1)
+		return fmt.Errorf("empty command")
 	}
 
 	fmt.Println(StyleInfo.Render(fmt.Sprintf("Found %d repos (filtered from %d discovered), executing '%s' with %d workers...",
-		len(repos), len(allRepos), command, min(workers, len(repos)))))
+		len(repos), total, command, min(workers, len(repos)))))
 
 	logManager, err := NewLogManager()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating log manager: %s\n", err)
-		os.Exit(1)
+		return fmt.Errorf("log manager: %w", err)
 	}
 
 	progress := NewProgressState(repos, fmt.Sprintf("Executing '%s'", command), cfg.PageSize)
-	progress.render()
-	progress.StartInput()
+	stop := progress.start()
 
-	repoCh := make(chan RepoInfo, len(repos))
-	resCh := make(chan CommandResult, len(repos))
+	results := runPool(ctx, repos, workers, func(ctx context.Context, r RepoInfo) CommandResult {
+		progress.UpdateStatus(r.RelPath, statusProcessing, "")
 
-	var wg sync.WaitGroup
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for r := range repoCh {
-
-				progress.UpdateStatus(r.RelPath, statusProcessing, "")
-
-				logFile, err := logManager.CreateLogFile(r.RelPath)
-				var cmdErr error
-
-				if err != nil {
-
-					ctx, cancel := context.WithTimeout(context.Background(), gitCommandTimeout)
-					var cmd *exec.Cmd
-					if runtime.GOOS == "windows" {
-						cmd = exec.CommandContext(ctx, "cmd", "/c", command)
-					} else {
-						cmd = exec.CommandContext(ctx, "sh", "-c", command)
-					}
-					cmd.Dir = r.Path
-					output, cmdErr := cmd.CombinedOutput()
-					cancel()
-
-					result := CommandResult{
-						RelPath: r.RelPath,
-						Output:  string(output),
-						Error:   cmdErr,
-					}
-
-					if cmdErr != nil {
-						errorMsg := cmdErr.Error()
-						if len(errorMsg) > 50 {
-							errorMsg = errorMsg[:50] + "..."
-						}
-						progress.UpdateStatus(r.RelPath, statusFailed, errorMsg)
-					} else {
-						progress.UpdateStatus(r.RelPath, statusCompleted, "")
-					}
-
-					resCh <- result
-				} else {
-
-					cmdErr = executeShellCommandToFile(context.Background(), r.Path, logFile, command)
-					_ = logFile.Close()
-
-					result := CommandResult{
-						RelPath: r.RelPath,
-						Output:  "",
-						Error:   cmdErr,
-					}
-
-					if cmdErr != nil {
-						errorMsg := cmdErr.Error()
-						if len(errorMsg) > 50 {
-							errorMsg = errorMsg[:50] + "..."
-						}
-						progress.UpdateStatus(r.RelPath, statusFailed, errorMsg)
-					} else {
-						progress.UpdateStatus(r.RelPath, statusCompleted, "")
-					}
-
-					resCh <- result
-				}
+		logFile, logErr := logManager.CreateLogFile(r.RelPath)
+		if logErr != nil {
+			cmdCtx, cancel := context.WithTimeout(ctx, gitCommandTimeout)
+			defer cancel()
+			var cmd *exec.Cmd
+			if runtime.GOOS == "windows" {
+				cmd = exec.CommandContext(cmdCtx, "cmd", "/c", command)
+			} else {
+				cmd = exec.CommandContext(cmdCtx, "sh", "-c", command)
 			}
-		}()
-	}
-	go func() {
-		for _, r := range repos {
-			repoCh <- r
+			cmd.Dir = r.Path
+			output, cmdErr := cmd.CombinedOutput()
+			st, msg := progressStatusFromErr(cmdErr)
+			progress.UpdateStatus(r.RelPath, st, msg)
+			return CommandResult{RelPath: r.RelPath, Output: string(output), Error: cmdErr}
 		}
-		close(repoCh)
-	}()
-	go func() {
-		wg.Wait()
-		close(resCh)
-	}()
+		cmdErr := executeShellCommandToFile(ctx, r.Path, logFile, command)
+		_ = logFile.Close()
+		st, msg := progressStatusFromErr(cmdErr)
+		progress.UpdateStatus(r.RelPath, st, msg)
+		return CommandResult{RelPath: r.RelPath, Error: cmdErr}
+	})
 
-	var results []CommandResult
 	success, failed := 0, 0
-	for res := range resCh {
-		results = append(results, res)
+	for _, res := range results {
 		if res.Error != nil {
 			failed++
 		} else {
@@ -553,8 +355,7 @@ func executeShellInRepos(root, command string, workers int, cfg *Config) {
 		}
 	}
 
-	progress.RenderFinal()
-	progress.StopInput()
+	stop()
 
 	fmt.Println("\n" + StyleBold.Render("--- Summary ---"))
 	fmt.Printf("Executed '%s' in %d repos: %s succeeded, %s failed\n",
@@ -570,6 +371,7 @@ func executeShellInRepos(root, command string, workers int, cfg *Config) {
 	}
 
 	if failed > 0 {
-		os.Exit(1)
+		return errReposFailed
 	}
+	return nil
 }

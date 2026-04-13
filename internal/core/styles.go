@@ -20,7 +20,6 @@ var (
 	StyleErrInline  = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Faint(true)
 	StyleBold       = lipgloss.NewStyle().Bold(true)
 
-	// Aliases — same visual style, different semantic intent.
 	StyleWaiting = StyleDim
 	StyleInfo    = StyleProcessing
 )

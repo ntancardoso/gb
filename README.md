@@ -186,15 +186,21 @@ gb -rs main
 Manage git worktrees across all repos simultaneously.
 
 ```bash
-gb -wl                           # List all active worktrees
-gb -wc feature/my-task           # Create worktrees branching from master
-gb -wc feature/my-task develop   # Create worktrees branching from develop
-gb -wr feature/my-task           # Remove worktrees for the branch
-gb -wo feature/my-task           # Print worktree paths (for scripting)
-gb -l -iw                        # Include worktree repos in branch listing
+gb -wl                               # List all active worktrees
+gb -ib develop -wl                   # List worktrees only in repos currently on develop
+gb -wc feature/my-task               # Create worktrees branching from master
+gb -wc feature/my-task develop       # Create worktrees branching from develop
+gb -wr feature/my-task               # Remove worktrees for an exact branch name
+gb -wr "feat/AB*"                    # Remove all worktrees whose branch matches feat/AB*
+gb -i client-frontend -wr "feat/AB*" # Same, scoped to client-frontend repo only
+gb -ib develop -wr "feat/AB*"        # Remove matching worktrees in repos on develop
+gb -wo feature/my-task               # Print worktree paths (for scripting)
+gb -l -iw                            # Include worktree repos in branch listing
 ```
 
-By default, worktree repos are excluded from all operations. Use `-iw` / `--include-worktrees` to include them.
+The `-i`/`-e` (include/exclude dirs) and `-ib`/`-eb` (include/exclude by current branch) filters all apply to worktree commands. By default, worktree repos are excluded from all operations. Use `-iw` / `--include-worktrees` to include them.
+
+The `-wr` flag supports glob patterns (`*`, `?`, `[...]`) to match multiple branches at once. The main worktree is never removed.
 
 ### Advanced Options
 
@@ -264,33 +270,37 @@ Options:
 Worktree Commands:
   -wl, --worktree-list              List all active worktrees across all repos
   -wc, --worktree-create string     Create worktrees for <branch> (optional base as positional arg, default master)
-  -wr, --worktree-remove string     Remove worktrees for <branch> across all repos
+  -wr, --worktree-remove string     Remove worktrees for <branch> across all repos (glob patterns supported: *, ?, [...])
   -wo, --worktree-open string       Print worktree paths for <branch> across all repos
 
 Examples:
-  gb main                      Switch all repos to main branch
-  gb -l                        List all current branches
-  gb -w 50 -l                  Fast branch listing with 50 workers
-  gb --workers 5 main          Switch with 5 concurrent workers
-  gb -e "build,temp" -l        List branches, excluding build and temp directories
-  gb -i "vendor,dist" 15.0     Include normally excluded directories
-  gb -c "status"               Execute 'git status' in all repositories
-  gb --cmd "fetch origin"      Execute 'git fetch origin' in all repositories
-  gb -sh "ls -la"              Execute 'ls -la' shell command in all repositories
-  gb --shell "mkdir tmp"       Execute 'mkdir tmp' shell command in all repositories
-  gb -rs main                  Soft reset all repos to origin/main
-  gb -rs main -r upstream      Soft reset all repos to upstream/main
-  gb -rs upstream/main         Soft reset all repos to upstream/main (inline remote)
-  gb -rh feature/xyz           Hard reset all repos to origin/feature/xyz (with confirmation)
-  gb -rb develop               Rebase all repos onto origin/develop (with confirmation)
-  gb -ib main -l               List branches, only repos currently on main
-  gb -eb main -c "fetch origin" Fetch in all repos except those on main
-  gb -l -iw                    List branches including worktree repos
-  gb -wl                       List all worktrees across repos
-  gb -wc feature/my-task       Create worktrees for feature/my-task (base: master)
-  gb -wc feature/my-task main  Create worktrees branching from main
-  gb -wo feature/my-task       Print worktree paths for feature/my-task
-  gb -wr feature/my-task       Remove worktrees for feature/my-task
+  gb main                               Switch all repos to main branch
+  gb -l                                 List all current branches
+  gb -w 50 -l                           Fast branch listing with 50 workers
+  gb --workers 5 main                   Switch with 5 concurrent workers
+  gb -e "build,temp" -l                 List branches, excluding build and temp directories
+  gb -i "vendor,dist" 15.0             Include normally excluded directories
+  gb -c "status"                        Execute 'git status' in all repositories
+  gb --cmd "fetch origin"               Execute 'git fetch origin' in all repositories
+  gb -sh "ls -la"                       Execute 'ls -la' shell command in all repositories
+  gb --shell "mkdir tmp"                Execute 'mkdir tmp' shell command in all repositories
+  gb -rs main                           Soft reset all repos to origin/main
+  gb -rs main -r upstream               Soft reset all repos to upstream/main
+  gb -rs upstream/main                  Soft reset all repos to upstream/main (inline remote)
+  gb -rh feature/xyz                    Hard reset all repos to origin/feature/xyz (with confirmation)
+  gb -rb develop                        Rebase all repos onto origin/develop (with confirmation)
+  gb -ib main -l                        List branches, only repos currently on main
+  gb -eb main -c "fetch origin"         Fetch in all repos except those on main
+  gb -l -iw                             List branches including worktree repos
+  gb -wl                                List all worktrees across repos
+  gb -ib develop -wl                    List worktrees only in repos currently on develop
+  gb -wc feature/my-task                Create worktrees for feature/my-task (base: master)
+  gb -wc feature/my-task main           Create worktrees branching from main
+  gb -wo feature/my-task                Print worktree paths for feature/my-task
+  gb -wr feature/my-task                Remove worktrees for feature/my-task
+  gb -wr "feat/AB*"                     Remove all worktrees whose branch matches feat/AB*
+  gb -i client-frontend -wr "feat/AB*"  Remove matching worktrees in client-frontend only
+  gb -ib develop -wr "feat/AB*"         Remove matching worktrees in repos on develop
 ```
 
 ## Default Excluded Directories

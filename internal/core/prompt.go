@@ -8,7 +8,6 @@ import (
 )
 
 func PromptViewLogs() bool {
-
 	fileInfo, err := os.Stdin.Stat()
 	if err != nil {
 		return false
@@ -27,34 +26,61 @@ func PromptViewLogs() bool {
 	}
 
 	input = strings.TrimSpace(strings.ToLower(input))
-
 	return input == "y" || input == "yes"
 }
 
-func DisplayLogs(logManager *LogManager, results []CommandResult) {
+type logEntry struct {
+	relPath    string
+	failed     bool
+	skipped    bool
+	skipReason string
+	label      string
+}
+
+func displayLogEntries(logManager *LogManager, entries []logEntry) {
 	fmt.Println("\n" + StyleBold.Render("=== Detailed Logs ==="))
 	fmt.Println()
 
 	allLogs := logManager.GetAllLogPaths()
 
 	fmt.Println(StyleFailed.Render("--- Failed Repositories ---"))
-	hasFailures := false
-	for _, res := range results {
-		if res.Error != nil {
-			hasFailures = true
-			displayRepoLog(logManager, res.RelPath, StyleFailed.Render("FAILED"))
+	hasFailed := false
+	for _, e := range entries {
+		if e.failed {
+			hasFailed = true
+			displayRepoLog(logManager, e.relPath, StyleFailed.Render("FAILED"))
 		}
 	}
-	if !hasFailures {
+	if !hasFailed {
 		fmt.Println(StyleDim.Render("(none)"))
+	}
+
+	hasSkipped := false
+	for _, e := range entries {
+		if e.skipped {
+			hasSkipped = true
+			break
+		}
+	}
+	if hasSkipped {
+		fmt.Println("\n" + StyleSkipped.Render("--- Skipped Repositories ---"))
+		for _, e := range entries {
+			if e.skipped {
+				fmt.Printf("  [SKIPPED] %s - %s\n", e.relPath, e.skipReason)
+			}
+		}
 	}
 
 	fmt.Println("\n" + StyleSuccess.Render("--- Successful Repositories ---"))
 	hasSuccess := false
-	for _, res := range results {
-		if res.Error == nil {
+	for _, e := range entries {
+		if !e.failed && !e.skipped {
 			hasSuccess = true
-			displayRepoLog(logManager, res.RelPath, StyleSuccess.Render("SUCCESS"))
+			label := e.label
+			if label == "" {
+				label = StyleSuccess.Render("SUCCESS")
+			}
+			displayRepoLog(logManager, e.relPath, label)
 		}
 	}
 	if !hasSuccess {
@@ -64,6 +90,47 @@ func DisplayLogs(logManager *LogManager, results []CommandResult) {
 	fmt.Println("\n" + StyleBold.Render("--- Log Location ---"))
 	fmt.Printf("Logs are stored in: %s\n", StyleDim.Render(logManager.GetTempDir()))
 	fmt.Printf("Total log files: %s\n", StyleDim.Render(fmt.Sprintf("%d", len(allLogs))))
+}
+
+func DisplayLogs(logManager *LogManager, results []CommandResult) {
+	entries := make([]logEntry, len(results))
+	for i, res := range results {
+		entries[i] = logEntry{
+			relPath: res.RelPath,
+			failed:  res.Error != nil,
+		}
+	}
+	displayLogEntries(logManager, entries)
+}
+
+func DisplayResetLogs(logManager *LogManager, results []ResetResult) {
+	entries := make([]logEntry, len(results))
+	for i, res := range results {
+		e := logEntry{
+			relPath:    res.RelPath,
+			failed:     !res.Success && !res.Skipped,
+			skipped:    res.Skipped,
+			skipReason: res.SkipReason,
+		}
+		if res.Success && res.Warning != "" {
+			e.label = StyleSuccess.Render(fmt.Sprintf("SUCCESS (warning: %s)", res.Warning))
+		}
+		entries[i] = e
+	}
+	displayLogEntries(logManager, entries)
+}
+
+func DisplaySwitchLogs(logManager *LogManager, results []SwitchResult) {
+	entries := make([]logEntry, len(results))
+	for i, res := range results {
+		entries[i] = logEntry{
+			relPath:    res.RelPath,
+			failed:     !res.Success && !res.Skipped,
+			skipped:    res.Skipped,
+			skipReason: res.Error,
+		}
+	}
+	displayLogEntries(logManager, entries)
 }
 
 func displayRepoLog(logManager *LogManager, relPath, status string) {
@@ -84,8 +151,6 @@ func displayRepoLog(logManager *LogManager, relPath, status string) {
 	fmt.Println("---")
 }
 
-// PromptConfirmDestructive shows a pre-flight warning and asks the user to confirm.
-// Returns false (abort) if stdin is not a TTY or the user does not answer "y"/"yes".
 func PromptConfirmDestructive(opDesc string, repoCount int, dirtyRepos []repoPreflightInfo) bool {
 	if len(dirtyRepos) > 0 {
 		fmt.Printf("\n%s The following %d repos have changes that will be DISCARDED:\n", StyleFailed.Render("WARNING:"), len(dirtyRepos))
@@ -106,103 +171,4 @@ func PromptConfirmDestructive(opDesc string, repoCount int, dirtyRepos []repoPre
 
 	input = strings.TrimSpace(strings.ToLower(input))
 	return input == "y" || input == "yes"
-}
-
-// DisplayResetLogs prints logs from a reset/rebase run, grouped by outcome.
-func DisplayResetLogs(logManager *LogManager, results []ResetResult) {
-	fmt.Println("\n" + StyleBold.Render("=== Detailed Logs ==="))
-	fmt.Println()
-
-	allLogs := logManager.GetAllLogPaths()
-
-	fmt.Println(StyleFailed.Render("--- Failed Repositories ---"))
-	hasFailures := false
-	for _, res := range results {
-		if !res.Success && !res.Skipped {
-			hasFailures = true
-			displayRepoLog(logManager, res.RelPath, StyleFailed.Render("FAILED"))
-		}
-	}
-	if !hasFailures {
-		fmt.Println(StyleDim.Render("(none)"))
-	}
-
-	fmt.Println("\n" + StyleSkipped.Render("--- Skipped Repositories ---"))
-	hasSkipped := false
-	for _, res := range results {
-		if res.Skipped {
-			hasSkipped = true
-			fmt.Printf("  [SKIPPED] %s - %s\n", res.RelPath, res.SkipReason)
-		}
-	}
-	if !hasSkipped {
-		fmt.Println(StyleDim.Render("(none)"))
-	}
-
-	fmt.Println("\n" + StyleSuccess.Render("--- Successful Repositories ---"))
-	hasSuccess := false
-	for _, res := range results {
-		if res.Success {
-			hasSuccess = true
-			label := StyleSuccess.Render("SUCCESS")
-			if res.Warning != "" {
-				label = StyleSuccess.Render(fmt.Sprintf("SUCCESS (warning: %s)", res.Warning))
-			}
-			displayRepoLog(logManager, res.RelPath, label)
-		}
-	}
-	if !hasSuccess {
-		fmt.Println(StyleDim.Render("(none)"))
-	}
-
-	fmt.Println("\n" + StyleBold.Render("--- Log Location ---"))
-	fmt.Printf("Logs are stored in: %s\n", StyleDim.Render(logManager.GetTempDir()))
-	fmt.Printf("Total log files: %s\n", StyleDim.Render(fmt.Sprintf("%d", len(allLogs))))
-}
-
-func DisplaySwitchLogs(logManager *LogManager, results []SwitchResult) {
-	fmt.Println("\n" + StyleBold.Render("=== Detailed Logs ==="))
-	fmt.Println()
-
-	allLogs := logManager.GetAllLogPaths()
-
-	fmt.Println(StyleFailed.Render("--- Failed Repositories ---"))
-	hasFailures := false
-	for _, res := range results {
-		if !res.Success && !res.Skipped {
-			hasFailures = true
-			displayRepoLog(logManager, res.RelPath, StyleFailed.Render("FAILED"))
-		}
-	}
-	if !hasFailures {
-		fmt.Println(StyleDim.Render("(none)"))
-	}
-
-	fmt.Println("\n" + StyleSkipped.Render("--- Skipped Repositories ---"))
-	hasSkipped := false
-	for _, res := range results {
-		if res.Skipped {
-			hasSkipped = true
-			fmt.Printf("  [SKIPPED] %s - %s\n", res.RelPath, res.Error)
-		}
-	}
-	if !hasSkipped {
-		fmt.Println(StyleDim.Render("(none)"))
-	}
-
-	fmt.Println("\n" + StyleSuccess.Render("--- Successful Repositories ---"))
-	hasSuccess := false
-	for _, res := range results {
-		if res.Success {
-			hasSuccess = true
-			displayRepoLog(logManager, res.RelPath, StyleSuccess.Render("SUCCESS"))
-		}
-	}
-	if !hasSuccess {
-		fmt.Println(StyleDim.Render("(none)"))
-	}
-
-	fmt.Println("\n" + StyleBold.Render("--- Log Location ---"))
-	fmt.Printf("Logs are stored in: %s\n", StyleDim.Render(logManager.GetTempDir()))
-	fmt.Printf("Total log files: %s\n", StyleDim.Render(fmt.Sprintf("%d", len(allLogs))))
 }

@@ -1,16 +1,15 @@
 package core
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 )
 
-// ResetResult holds the outcome of a single repo reset/rebase operation.
 type ResetResult struct {
 	RelPath    string
 	Success    bool
@@ -20,122 +19,67 @@ type ResetResult struct {
 	Warning    string
 }
 
-// repoPreflightInfo holds dirty-state info gathered during pre-flight scan.
 type repoPreflightInfo struct {
 	RelPath     string
 	Path        string
 	DirtyStatus string
 }
 
-func syncBranch(root, branch, mode string, workers int, cfg *Config) {
+func syncBranch(ctx context.Context, root, branch, mode string, workers int, cfg *Config) error {
 	remote := cfg.Remote
-	allRepos, err := findGitRepos(root, cfg)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "Error:", err)
-		os.Exit(1)
-	}
-	if len(allRepos) == 0 {
-		fmt.Println("No repos found")
-		return
+	repos, total := discoverRepos(root, workers, cfg, false)
+	if repos == nil {
+		return nil
 	}
 
-	repos := cfg.filterReposForExecution(allRepos)
-	repos = cfg.filterWorktrees(repos)
-	if len(repos) == 0 {
-		fmt.Println("No repos match the specified include/exclude criteria")
-		return
-	}
-
-	repos = cfg.filterReposByBranch(repos, workers)
-	if len(repos) == 0 {
-		fmt.Println("No repos match the specified branch criteria")
-		return
-	}
-
-	// Destructive operations require interactive TTY and explicit confirmation.
 	if mode == "hard" || mode == "rebase" {
 		fileInfo, statErr := os.Stdin.Stat()
 		if statErr != nil || (fileInfo.Mode()&os.ModeCharDevice) == 0 {
-			fmt.Fprintln(os.Stderr, "Error: stdin is not a terminal. Destructive operations require interactive confirmation.")
-			fmt.Fprintln(os.Stderr, "Use -rs (soft reset) for non-interactive use.")
-			os.Exit(1)
+			return fmt.Errorf("stdin is not a terminal; destructive operations require interactive confirmation — use -rs for non-interactive use")
 		}
 
-		dirtyRepos := preflightScan(repos, workers)
+		dirtyRepos := preflightScan(ctx, repos, workers)
 		if !PromptConfirmDestructive(operationDescription(mode, branch, remote), len(repos), dirtyRepos) {
 			fmt.Println("Aborted.")
-			return
+			return nil
 		}
 	}
 
 	opDesc := operationDescription(mode, branch, remote)
 	fmt.Println(StyleInfo.Render(fmt.Sprintf("Found %d repos (filtered from %d discovered), running '%s' with %d workers...",
-		len(repos), len(allRepos), opDesc, min(workers, len(repos)))))
+		len(repos), total, opDesc, min(workers, len(repos)))))
 
 	logManager, err := NewLogManager()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating log manager: %s\n", err)
-		os.Exit(1)
+		return fmt.Errorf("log manager: %w", err)
 	}
 
 	progress := NewProgressState(repos, opDesc, cfg.PageSize)
-	progress.render()
-	progress.StartInput()
+	stop := progress.start()
 
-	repoCh := make(chan RepoInfo, len(repos))
-	resCh := make(chan ResetResult, len(repos))
+	results := runPool(ctx, repos, workers, func(_ context.Context, r RepoInfo) ResetResult {
+		progress.UpdateStatus(r.RelPath, statusProcessing, "")
 
-	var wg sync.WaitGroup
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for r := range repoCh {
-				progress.UpdateStatus(r.RelPath, statusProcessing, "")
-
-				logFile, logErr := logManager.CreateLogFile(r.RelPath)
-				if logErr != nil {
-					logFile = nil
-				}
-
-				res := processSingleReset(r, branch, mode, remote, logFile)
-
-				if logFile != nil {
-					_ = logFile.Close()
-				}
-
-				switch {
-				case res.Skipped:
-					progress.UpdateStatus(r.RelPath, statusCompleted, "skipped: "+res.SkipReason)
-				case res.Success:
-					progress.UpdateStatus(r.RelPath, statusCompleted, "")
-				default:
-					progress.UpdateStatus(r.RelPath, statusFailed, res.Error)
-				}
-
-				resCh <- res
-			}
-		}()
-	}
-
-	go func() {
-		for _, r := range repos {
-			repoCh <- r
+		logFile, _ := logManager.CreateLogFile(r.RelPath)
+		res := processSingleReset(r, branch, mode, remote, logFile)
+		if logFile != nil {
+			_ = logFile.Close()
 		}
-		close(repoCh)
-	}()
 
-	go func() {
-		wg.Wait()
-		close(resCh)
-	}()
+		switch {
+		case res.Skipped:
+			progress.UpdateStatus(r.RelPath, statusCompleted, "skipped: "+res.SkipReason)
+		case res.Success:
+			progress.UpdateStatus(r.RelPath, statusCompleted, "")
+		default:
+			progress.UpdateStatus(r.RelPath, statusFailed, res.Error)
+		}
+		return res
+	})
 
-	var results []ResetResult
 	var succeeded, failed, skipped int
 	skipReasons := make(map[string]int)
-
-	for res := range resCh {
-		results = append(results, res)
+	for _, res := range results {
 		switch {
 		case res.Skipped:
 			skipped++
@@ -147,15 +91,13 @@ func syncBranch(root, branch, mode string, workers int, cfg *Config) {
 		}
 	}
 
-	progress.RenderFinal()
-	progress.StopInput()
+	stop()
 
 	fmt.Println("\n" + StyleBold.Render("--- Summary ---"))
 	fmt.Printf("Ran '%s' across %d repos:\n", opDesc, len(repos))
 	fmt.Printf("  %s succeeded\n", StyleSuccess.Render(fmt.Sprintf("%d", succeeded)))
 	fmt.Printf("  %s failed\n", StyleFailed.Render(fmt.Sprintf("%d", failed)))
 	if skipped > 0 {
-		// Sort for deterministic output.
 		reasons := make([]string, 0, len(skipReasons))
 		for reason := range skipReasons {
 			reasons = append(reasons, reason)
@@ -176,8 +118,9 @@ func syncBranch(root, branch, mode string, workers int, cfg *Config) {
 	}
 
 	if failed > 0 {
-		os.Exit(1)
+		return errReposFailed
 	}
+	return nil
 }
 
 func operationDescription(mode, branch, remote string) string {
@@ -192,45 +135,21 @@ func operationDescription(mode, branch, remote string) string {
 	return "unknown operation"
 }
 
-// preflightScan concurrently checks all repos for dirty working trees.
-func preflightScan(repos []RepoInfo, workers int) []repoPreflightInfo {
-	repoCh := make(chan RepoInfo, len(repos))
-	resCh := make(chan repoPreflightInfo, len(repos))
+func preflightScan(ctx context.Context, repos []RepoInfo, workers int) []repoPreflightInfo {
+	results := runPool(ctx, repos, workers, func(_ context.Context, r RepoInfo) repoPreflightInfo {
+		return repoPreflightInfo{RelPath: r.RelPath, Path: r.Path, DirtyStatus: getDirtyStatus(r.Path)}
+	})
 
-	var wg sync.WaitGroup
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for r := range repoCh {
-				if status := getDirtyStatus(r.Path); status != "" {
-					resCh <- repoPreflightInfo{RelPath: r.RelPath, Path: r.Path, DirtyStatus: status}
-				}
-			}
-		}()
-	}
-
-	go func() {
-		for _, r := range repos {
-			repoCh <- r
+	dirty := make([]repoPreflightInfo, 0, len(results))
+	for _, info := range results {
+		if info.DirtyStatus != "" {
+			dirty = append(dirty, info)
 		}
-		close(repoCh)
-	}()
-
-	go func() {
-		wg.Wait()
-		close(resCh)
-	}()
-
-	var dirty []repoPreflightInfo
-	for info := range resCh {
-		dirty = append(dirty, info)
 	}
 	sort.Slice(dirty, func(i, j int) bool { return dirty[i].RelPath < dirty[j].RelPath })
 	return dirty
 }
 
-// getDirtyStatus returns a human-readable description of dirty state, or "" if clean.
 func getDirtyStatus(dir string) string {
 	cmd := exec.Command("git", "status", "--porcelain")
 	cmd.Dir = dir
@@ -268,7 +187,7 @@ func getDirtyStatus(dir string) string {
 }
 
 func processSingleReset(repo RepoInfo, branch, mode, remote string, logFile *os.File) ResetResult {
-	log := func(format string, args ...interface{}) {
+	log := func(format string, args ...any) {
 		if logFile != nil {
 			_, _ = fmt.Fprintf(logFile, format+"\n", args...)
 		}
@@ -325,7 +244,7 @@ func processSingleReset(repo RepoInfo, branch, mode, remote string, logFile *os.
 	return ResetResult{RelPath: repo.RelPath, Success: false, Error: "unknown mode"}
 }
 
-func doHardReset(repo RepoInfo, branch, remote string, logFile *os.File, log func(string, ...interface{})) ResetResult {
+func doHardReset(repo RepoInfo, branch, remote string, logFile *os.File, log func(string, ...any)) ResetResult {
 	if inProgress, opName := checkMidOperation(repo.Path); inProgress {
 		log("Skipping: mid-%s operation in progress", opName)
 		return ResetResult{RelPath: repo.RelPath, Skipped: true, SkipReason: fmt.Sprintf("mid-%s in progress", opName)}
@@ -346,7 +265,7 @@ func doHardReset(repo RepoInfo, branch, remote string, logFile *os.File, log fun
 	return ResetResult{RelPath: repo.RelPath, Success: true}
 }
 
-func doSoftReset(repo RepoInfo, branch, remote string, logFile *os.File, log func(string, ...interface{})) ResetResult {
+func doSoftReset(repo RepoInfo, branch, remote string, logFile *os.File, log func(string, ...any)) ResetResult {
 	warning := ""
 	stagedCheck := exec.Command("git", "diff", "--cached", "--quiet")
 	stagedCheck.Dir = repo.Path
@@ -370,7 +289,7 @@ func doSoftReset(repo RepoInfo, branch, remote string, logFile *os.File, log fun
 	return ResetResult{RelPath: repo.RelPath, Success: true, Warning: warning}
 }
 
-func doRebase(repo RepoInfo, branch, remote string, logFile *os.File, log func(string, ...interface{})) ResetResult {
+func doRebase(repo RepoInfo, branch, remote string, logFile *os.File, log func(string, ...any)) ResetResult {
 	if checkRebaseInProgress(repo.Path) {
 		log("Skipping: rebase already in progress")
 		return ResetResult{RelPath: repo.RelPath, Skipped: true, SkipReason: "rebase already in progress"}
@@ -407,22 +326,6 @@ func doRebase(repo RepoInfo, branch, remote string, logFile *os.File, log func(s
 	return ResetResult{RelPath: repo.RelPath, Success: true}
 }
 
-// --- helpers ---
-
-// resolveRemoteAndBranch detects an inline remote prefix in branchArg
-// (e.g. "origin/main", "upstream/feat/x"). The first path component is
-// validated against the repo's actual remotes: if it matches, it becomes the
-// remote and the remainder becomes the branch. Otherwise defaultRemote and
-// the full branchArg are returned unchanged.
-//
-// Examples (repo has remotes "origin" and "upstream"):
-//
-//	("main",              "origin")  → ("origin",   "main")
-//	("origin/main",       "origin")  → ("origin",   "main")
-//	("upstream/main",     "origin")  → ("upstream", "main")
-//	("feat/branch1",      "origin")  → ("origin",   "feat/branch1")
-//	("origin/feat/x",     "origin")  → ("origin",   "feat/x")
-//	("feat/x",            "upstream")→ ("upstream", "feat/x")
 func resolveRemoteAndBranch(dir, branchArg, defaultRemote string) (remote, branch string) {
 	idx := strings.Index(branchArg, "/")
 	if idx <= 0 {
@@ -531,7 +434,6 @@ func checkAlreadyAtTarget(dir, branch, remote string) bool {
 	return strings.TrimSpace(string(headOut)) == strings.TrimSpace(string(remoteOut))
 }
 
-// fetchBranchFromRemote fetches the named branch from the given remote, respecting shallow repos.
 func fetchBranchFromRemote(dir, branch, remote string, logFile *os.File) error {
 	checkCmd := exec.Command("git", "rev-parse", "--is-shallow-repository")
 	checkCmd.Dir = dir

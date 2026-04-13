@@ -107,10 +107,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
-		m.progBar.Width = msg.Width - 30
-		if m.progBar.Width < 20 {
-			m.progBar.Width = 20
-		}
+		m.progBar.Width = max(msg.Width-30, 20)
 		return m, nil
 
 	case spinner.TickMsg:
@@ -280,13 +277,11 @@ func (ps *ProgressState) StartInput() {
 	if !ps.supportsANSI || ps.program == nil {
 		return
 	}
-	ps.wg.Add(1)
-	go func() {
-		defer ps.wg.Done()
+	ps.wg.Go(func() {
 		if _, err := ps.program.Run(); err != nil {
 			fmt.Fprintf(os.Stderr, "TUI error: %v\n", err)
 		}
-	}()
+	})
 }
 
 func (ps *ProgressState) StopInput() {
@@ -310,5 +305,18 @@ func (ps *ProgressState) UpdateStatus(relPath, status, errorMsg string) {
 	fmt.Printf("%s: %s\n", relPath, status)
 }
 
-func (ps *ProgressState) render()      {}
-func (ps *ProgressState) RenderFinal() {}
+func (ps *ProgressState) start() func() {
+	ps.StartInput()
+	return ps.StopInput
+}
+
+func progressStatusFromErr(err error) (string, string) {
+	if err == nil {
+		return statusCompleted, ""
+	}
+	msg := strings.ReplaceAll(err.Error(), "\n", " ")
+	if r := []rune(msg); len(r) > 50 {
+		msg = string(r[:47]) + "..."
+	}
+	return statusFailed, msg
+}

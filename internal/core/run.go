@@ -1,6 +1,8 @@
 package core
 
 import (
+	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -259,7 +261,7 @@ func reorderArgs(args []string) []string {
 	return append(flags, positional...)
 }
 
-func Run(args []string) error {
+func Run(ctx context.Context, args []string) error {
 	args = reorderArgs(args)
 
 	fs := flag.NewFlagSet("gb", flag.ContinueOnError)
@@ -346,7 +348,7 @@ func Run(args []string) error {
 		fmt.Println("\nWorktree Commands:")
 		fmt.Println("  -wl, --worktree-list              List all active worktrees across all repos")
 		fmt.Println("  -wc, --worktree-create string     Create worktrees for <branch> (optional base as positional arg, default master)")
-		fmt.Println("  -wr, --worktree-remove string     Remove worktrees for <branch> across all repos")
+		fmt.Println("  -wr, --worktree-remove string     Remove worktrees for <branch> across all repos (glob patterns supported: *, ?, [...])")
 		fmt.Println("  -wo, --worktree-open string       Print worktree paths for <branch> across all repos")
 		fmt.Println("\nExamples:")
 		fmt.Println("  gb main                      Switch all repos to main branch")
@@ -370,11 +372,15 @@ func Run(args []string) error {
 		fmt.Println("  gb -eb main -c \"fetch origin\"  Fetch in all repos except those on main")
 		fmt.Println("  gb -ib develop -c \"status\"     Git status only in repos on develop")
 		fmt.Println("  gb -l -iw                      List branches including worktree repos")
-		fmt.Println("  gb -wl                         List all worktrees across repos")
-		fmt.Println("  gb -wc feature/my-task         Create worktrees for feature/my-task (base: master)")
-		fmt.Println("  gb -wc feature/my-task develop Create worktrees from develop branch")
-		fmt.Println("  gb -wo feature/my-task         Print worktree paths for feature/my-task")
-		fmt.Println("  gb -wr feature/my-task         Remove worktrees for feature/my-task")
+		fmt.Println("  gb -wl                                List all worktrees across repos")
+		fmt.Println("  gb -ib develop -wl                    List worktrees only in repos currently on develop")
+		fmt.Println("  gb -wc feature/my-task                Create worktrees for feature/my-task (base: master)")
+		fmt.Println("  gb -wc feature/my-task develop        Create worktrees from develop branch")
+		fmt.Println("  gb -wo feature/my-task                Print worktree paths for feature/my-task")
+		fmt.Println("  gb -wr feature/my-task                Remove worktrees for feature/my-task")
+		fmt.Println("  gb -wr \"feat/AB*\"                     Remove all worktrees whose branch matches feat/AB*")
+		fmt.Println("  gb -i client-frontend -wr \"feat/AB*\"  Remove matching worktrees in client-frontend only")
+		fmt.Println("  gb -ib develop -wr \"feat/AB*\"         Remove matching worktrees in repos on develop")
 	}
 
 	if err := fs.Parse(args); err != nil {
@@ -403,38 +409,31 @@ func Run(args []string) error {
 	root = resolveRoot(root)
 
 	if *runCommand != "" {
-		executeCommandInRepos(root, *runCommand, *workers, cfg)
-		return nil
+		return executeCommandInRepos(ctx, root, *runCommand, *workers, cfg)
 	}
 
 	if *runShell != "" {
-		executeShellInRepos(root, *runShell, *workers, cfg)
-		return nil
+		return executeShellInRepos(ctx, root, *runShell, *workers, cfg)
 	}
 
 	if *listBranches {
-		listAllBranches(root, *workers, cfg)
-		return nil
+		return listAllBranches(ctx, root, *workers, cfg)
 	}
 
 	if *resetSoft != "" {
-		syncBranch(root, *resetSoft, "soft", *workers, cfg)
-		return nil
+		return syncBranch(ctx, root, *resetSoft, "soft", *workers, cfg)
 	}
 
 	if *resetHard != "" {
-		syncBranch(root, *resetHard, "hard", *workers, cfg)
-		return nil
+		return syncBranch(ctx, root, *resetHard, "hard", *workers, cfg)
 	}
 
 	if *rebaseBranch != "" {
-		syncBranch(root, *rebaseBranch, "rebase", *workers, cfg)
-		return nil
+		return syncBranch(ctx, root, *rebaseBranch, "rebase", *workers, cfg)
 	}
 
 	if *wtList {
-		worktreeListAll(root, *workers, cfg)
-		return nil
+		return worktreeListAll(ctx, root, *workers, cfg)
 	}
 
 	if *wtCreate != "" {
@@ -442,18 +441,15 @@ func Run(args []string) error {
 		if fs.NArg() >= 1 {
 			base = fs.Arg(0)
 		}
-		worktreeCreate(root, *wtCreate, base, *workers, cfg)
-		return nil
+		return worktreeCreate(ctx, root, *wtCreate, base, *workers, cfg)
 	}
 
 	if *wtRemove != "" {
-		worktreeRemove(root, *wtRemove, *workers, cfg)
-		return nil
+		return worktreeRemove(ctx, root, *wtRemove, *workers, cfg)
 	}
 
 	if *wtOpen != "" {
-		worktreeOpen(root, *wtOpen, *workers, cfg)
-		return nil
+		return worktreeOpen(ctx, root, *wtOpen, *workers, cfg)
 	}
 
 	if fs.NArg() < 1 {
@@ -461,9 +457,11 @@ func Run(args []string) error {
 		return fmt.Errorf("branch name required")
 	}
 
-	targetBranch := fs.Arg(0)
-	switchBranches(root, targetBranch, *workers, cfg)
-	return nil
+	return switchBranches(ctx, root, fs.Arg(0), *workers, cfg)
+}
+
+func IsSilentError(err error) bool {
+	return errors.Is(err, errReposFailed)
 }
 
 func parseCommaSeparated(input string, defaultValue []string) []string {

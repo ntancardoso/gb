@@ -14,19 +14,35 @@ A fast CLI tool for executing git and shell commands across multiple repositorie
 - Configurable worker pool for parallel execution
 - Exclude or include specific directories and branches
 - Worktree management: create, remove, list, and open worktrees across all repos
+- Show divergence (ahead/behind commits) vs a remote branch or each repo's tracked branch
+- Show upstream tracking branch configured for each repo
 
 ## Installation
 
 ### Linux / macOS
 
 ```sh
+# Latest stable release
 curl -fsSL https://raw.githubusercontent.com/ntancardoso/gb/main/install.sh | sh
+
+# Latest pre-release
+curl -fsSL https://raw.githubusercontent.com/ntancardoso/gb/main/install.sh | sh -s -- --pre-release
+
+# Specific version
+curl -fsSL https://raw.githubusercontent.com/ntancardoso/gb/main/install.sh | sh -s -- --version v0.2.3
 ```
 
 ### Windows (PowerShell)
 
 ```powershell
+# Latest stable release
 irm https://raw.githubusercontent.com/ntancardoso/gb/main/install.ps1 | iex
+
+# Latest pre-release
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/ntancardoso/gb/main/install.ps1))) -PreRelease
+
+# Specific version
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/ntancardoso/gb/main/install.ps1))) -Version v0.2.3
 ```
 
 Installs to `%LOCALAPPDATA%\Programs\gb` and adds it to your user PATH automatically.
@@ -127,6 +143,26 @@ gb --help          # Long form
 gb -v              # Short form
 gb --version       # Long form
 ```
+
+### Remote Status
+
+**Check divergence (ahead/behind) vs a remote branch:**
+```bash
+gb -dv                    # Each repo's tracked branch (per-repo upstream)
+gb -dv main               # All repos vs origin/main
+gb --diverge main         # Long form
+gb -dv origin/main        # Explicit remote prefix
+gb -dv main -r upstream   # Check vs upstream/main
+gb -dv upstream/master    # Inline remote prefix
+```
+When no branch is given, each repo is checked against its own configured upstream tracking branch. Reads locally cached remote state — run `gb -c "fetch --all"` first for up-to-date results.
+
+**Show upstream tracking branch for each repo:**
+```bash
+gb -tr           # Short form
+gb --track       # Long form
+```
+Shows what remote branch each repo's current local branch is configured to track, or `(none)` if no upstream is set.
 
 ### Sync from Remote
 
@@ -265,6 +301,8 @@ Options:
                              Only operate on repos currently on these branches (comma-separated, glob patterns supported)
   -eb, --excludeBranches string
                              Exclude repos currently on these branches (comma-separated, glob patterns supported)
+  -dv, --diverge [branch]    Show ahead/behind counts vs <remote>/<branch>; omit branch to use each repo's tracked branch
+  -tr, --track               Show upstream tracking branch for each repo's current branch
   -iw, --include-worktrees   Include worktree repos in operations (default: excluded)
 
 Worktree Commands:
@@ -289,6 +327,10 @@ Examples:
   gb -rs upstream/main                  Soft reset all repos to upstream/main (inline remote)
   gb -rh feature/xyz                    Hard reset all repos to origin/feature/xyz (with confirmation)
   gb -rb develop                        Rebase all repos onto origin/develop (with confirmation)
+  gb -dv                                Check divergence vs each repo's tracked branch
+  gb -dv main                           Check divergence vs origin/main across all repos
+  gb -dv main -r upstream               Check divergence vs upstream/main
+  gb -tr                                Show upstream tracking branch for each repo
   gb -ib main -l                        List branches, only repos currently on main
   gb -eb main -c "fetch origin"         Fetch in all repos except those on main
   gb -l -iw                             List branches including worktree repos

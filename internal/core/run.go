@@ -261,8 +261,23 @@ func reorderArgs(args []string) []string {
 	return append(flags, positional...)
 }
 
+// Go's flag package requires a value for string flags; inject "" so -dv can be used without a branch argument.
+func injectDivergeDefault(args []string) []string {
+	result := make([]string, 0, len(args)+1)
+	for i, arg := range args {
+		result = append(result, arg)
+		if arg == "-dv" || arg == "--diverge" || arg == "-diverge" {
+			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
+				result = append(result, "")
+			}
+		}
+	}
+	return result
+}
+
 func Run(ctx context.Context, args []string) error {
 	args = reorderArgs(args)
+	args = injectDivergeDefault(args)
 
 	fs := flag.NewFlagSet("gb", flag.ContinueOnError)
 
@@ -323,12 +338,20 @@ func Run(ctx context.Context, args []string) error {
 	wtOpen := fs.String("worktree-open", "", "Print worktree paths for <branch> across all repos")
 	fs.StringVar(wtOpen, "wo", "", "Print worktree paths (shorthand)")
 
+	diverge := fs.String("diverge", "", "Show ahead/behind commit counts vs <remote>/<branch>")
+	fs.StringVar(diverge, "dv", "", "Show divergence vs remote ref (shorthand)")
+
+	trackUpstream := fs.Bool("track", false, "Show upstream tracking branch for each repo's current branch")
+	fs.BoolVar(trackUpstream, "tr", false, "Show upstream tracking (shorthand)")
+
 	fs.Usage = func() {
 		_, _ = fmt.Fprintf(fs.Output(), "Usage: gb [options] <branch_name>\n\n")
 		fmt.Println("Options:")
 		fmt.Println("  -h, --help              Show this help message")
 		fmt.Println("  -v, --version           Show version information")
 		fmt.Println("  -l, --list              List all branches found in repositories")
+		fmt.Println("  -dv, --diverge [branch] Show ahead/behind commit counts vs <remote>/<branch> (omit branch to use each repo's tracked branch)")
+		fmt.Println("  -tr, --track            Show upstream tracking branch for each repo's current branch")
 		fmt.Println("  -c, --cmd string        Execute a git command in all repositories")
 		fmt.Println("  -sh, --shell string     Execute a shell command in all repositories")
 		fmt.Println("  -w, --workers int       Number of concurrent workers (default 20)")
@@ -381,6 +404,11 @@ func Run(ctx context.Context, args []string) error {
 		fmt.Println("  gb -wr \"feat/AB*\"                     Remove all worktrees whose branch matches feat/AB*")
 		fmt.Println("  gb -i client-frontend -wr \"feat/AB*\"  Remove matching worktrees in client-frontend only")
 		fmt.Println("  gb -ib develop -wr \"feat/AB*\"         Remove matching worktrees in repos on develop")
+		fmt.Println("  gb -dv                       Show divergence vs each repo's tracked branch")
+		fmt.Println("  gb -dv main                  Show divergence vs origin/main")
+		fmt.Println("  gb -dv origin/main           Explicit remote prefix for divergence check")
+		fmt.Println("  gb -dv main -r upstream      Check divergence against upstream/main")
+		fmt.Println("  gb -tr                       Show upstream tracking for all repos")
 	}
 
 	if err := fs.Parse(args); err != nil {
@@ -418,6 +446,20 @@ func Run(ctx context.Context, args []string) error {
 
 	if *listBranches {
 		return listAllBranches(ctx, root, *workers, cfg)
+	}
+
+	divergeSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "diverge" || f.Name == "dv" {
+			divergeSet = true
+		}
+	})
+	if divergeSet {
+		return checkDiverge(ctx, root, *diverge, *workers, cfg)
+	}
+
+	if *trackUpstream {
+		return checkTrack(ctx, root, *workers, cfg)
 	}
 
 	if *resetSoft != "" {

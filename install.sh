@@ -47,18 +47,56 @@ detect_arch() {
   esac
 }
 
-fetch_latest_version() {
+http_get() {
+  url="$1"
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
-      | grep '"tag_name"' \
-      | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/'
+    curl -fsSL "$url"
   elif command -v wget >/dev/null 2>&1; then
-    wget -qO- "https://api.github.com/repos/${REPO}/releases/latest" \
-      | grep '"tag_name"' \
-      | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/'
+    wget -qO- "$url"
   else
     fatal "curl or wget is required"
   fi
+}
+
+fetch_target_version() {
+  use_prerelease="$1"
+  requested_version="$2"
+
+  if [ -n "$requested_version" ]; then
+    tag="$requested_version"
+    case "$tag" in v*) ;; *) tag="v${tag}" ;; esac
+    result="$(http_get "https://api.github.com/repos/${REPO}/releases/tags/${tag}" \
+      | grep '"tag_name"' \
+      | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')"
+    [ -n "$result" ] || fatal "Version ${tag} not found"
+    echo "$result"
+  elif [ "$use_prerelease" = "1" ]; then
+    http_get "https://api.github.com/repos/${REPO}/releases" \
+      | awk '
+          /"tag_name"/ { t=$0; sub(/.*"tag_name": *"/, "", t); sub(/".*/, "", t); candidate=t }
+          /"prerelease": *true/ && candidate != "" { print candidate; exit }
+          /"prerelease": *false/ { candidate="" }
+        '
+  else
+    http_get "https://api.github.com/repos/${REPO}/releases/latest" \
+      | grep '"tag_name"' \
+      | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/'
+  fi
+}
+
+prompt_confirm() {
+  msg="$1"
+  if [ -t 0 ]; then
+    tty_in=/dev/stdin
+  else
+    tty_in=/dev/tty
+  fi
+  printf "${YELLOW}warning:${RESET} %s (y/N): " "$msg" >&2
+  read -r reply <"$tty_in"
+  case "$reply" in
+    [Yy]|[Yy][Ee][Ss]) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 get_installed_version() {
@@ -178,27 +216,51 @@ uninstall() {
 }
 
 main() {
-  # Parse args
+  USE_PRERELEASE=0
+  REQUESTED_VERSION=""
+  need_version=0
+
   for arg in "$@"; do
+    if [ "$need_version" = "1" ]; then
+      REQUESTED_VERSION="$arg"
+      need_version=0
+      continue
+    fi
     case "$arg" in
-      --uninstall) uninstall; exit 0 ;;
+      --uninstall)   uninstall; exit 0 ;;
+      --pre-release) USE_PRERELEASE=1 ;;
+      --version=*)   REQUESTED_VERSION="${arg#--version=}" ;;
+      --version)     need_version=1 ;;
     esac
   done
+
+  if [ "$need_version" = "1" ]; then
+    fatal "--version requires a value (e.g. --version v0.2.3)"
+  fi
+
+  if [ "$USE_PRERELEASE" = "1" ] && [ -n "$REQUESTED_VERSION" ]; then
+    fatal "--pre-release and --version cannot be used together"
+  fi
 
   OS="$(detect_os)"
   ARCH="$(detect_arch)"
 
-  info "Fetching latest release..."
-  VERSION="$(fetch_latest_version)"
-  [ -n "$VERSION" ] || fatal "Could not determine latest version"
+  info "Fetching release info..."
+  VERSION="$(fetch_target_version "$USE_PRERELEASE" "$REQUESTED_VERSION")"
+  [ -n "$VERSION" ] || fatal "Could not determine target version"
 
   # Check existing installation
   INSTALLED_VERSION="$(get_installed_version)"
   if [ -n "$INSTALLED_VERSION" ]; then
     INSTALLED_PATH="$(command -v "$BINARY")"
     if [ "$INSTALLED_VERSION" = "$VERSION" ]; then
-      success "gb ${VERSION} is already installed at ${INSTALLED_PATH} — nothing to do"
-      exit 0
+      if [ "$USE_PRERELEASE" = "0" ] && [ -z "$REQUESTED_VERSION" ]; then
+        success "gb ${VERSION} is already installed at ${INSTALLED_PATH} — nothing to do"
+        exit 0
+      fi
+      warn "gb ${VERSION} is already installed at ${INSTALLED_PATH}"
+      warn "This will replace the existing ${VERSION} installation with the same version."
+      prompt_confirm "Proceed?" || exit 0
     else
       info "Updating gb ${INSTALLED_VERSION} → ${VERSION}  (at ${INSTALLED_PATH})"
     fi
@@ -234,7 +296,11 @@ main() {
   check_path "$INSTALL_DIR"
 
   if [ -n "$INSTALLED_VERSION" ]; then
-    success "gb updated ${INSTALLED_VERSION} → ${VERSION}"
+    if [ "$INSTALLED_VERSION" = "$VERSION" ]; then
+      success "gb ${VERSION} reinstalled successfully"
+    else
+      success "gb updated ${INSTALLED_VERSION} → ${VERSION}"
+    fi
   else
     success "gb ${VERSION} installed successfully"
   fi

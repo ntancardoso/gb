@@ -1,7 +1,9 @@
 #Requires -Version 5.1
 [CmdletBinding()]
 param(
-  [switch]$Uninstall
+  [switch]$Uninstall,
+  [switch]$PreRelease,
+  [string]$Version = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -22,9 +24,26 @@ function Get-Arch {
   }
 }
 
-function Get-LatestVersion {
-  $response = Invoke-RestMethod "https://api.github.com/repos/$Repo/releases/latest"
-  return $response.tag_name
+function Get-TargetVersion {
+  if ($Version) {
+    $tag = $Version.Trim()
+    if (-not $tag.StartsWith('v')) { $tag = "v$tag" }
+    try {
+      $r = Invoke-RestMethod "https://api.github.com/repos/$Repo/releases/tags/$tag" -ErrorAction Stop
+    } catch {
+      Write-Fatal "Version $tag not found"
+    }
+    if (-not $r.tag_name) { Write-Fatal "Version $tag not found" }
+    return $r.tag_name
+  }
+  if ($PreRelease) {
+    $releases = Invoke-RestMethod "https://api.github.com/repos/$Repo/releases" -ErrorAction Stop
+    $r = $releases | Where-Object { $_.prerelease } | Select-Object -First 1
+    if (-not $r) { Write-Fatal "No pre-release found" }
+    return $r.tag_name
+  }
+  $r = Invoke-RestMethod "https://api.github.com/repos/$Repo/releases/latest" -ErrorAction Stop
+  return $r.tag_name
 }
 
 function Get-InstalledVersion {
@@ -104,21 +123,32 @@ function Invoke-Uninstall {
 function Main {
   if ($Uninstall) { Invoke-Uninstall; return }
 
+  if ($PreRelease -and $Version) {
+    Write-Fatal "-PreRelease and -Version cannot be used together"
+  }
+
   $arch = Get-Arch
 
-  Write-Info "Fetching latest release..."
-  $version = Get-LatestVersion
-  if (-not $version) { Write-Fatal "Could not determine latest version" }
+  Write-Info "Fetching release info..."
+  $version = Get-TargetVersion
+  if (-not $version) { Write-Fatal "Could not determine target version" }
 
   $installedVersion = Get-InstalledVersion
   if ($installedVersion) {
     $cmd = Get-Command gb -ErrorAction SilentlyContinue
     $installedPath = if ($cmd) { $cmd.Source } else { Join-Path (Get-InstallDir) $Binary }
     if ($installedVersion -eq $version) {
-      Write-Success "gb $version is already installed at $installedPath - nothing to do"
-      exit 0
+      if (-not $PreRelease -and -not $Version) {
+        Write-Success "gb $version is already installed at $installedPath - nothing to do"
+        exit 0
+      }
+      Write-Warn "gb $version is already installed at $installedPath"
+      Write-Warn "This will replace the existing $version installation with the same version."
+      $reply = Read-Host "Proceed? (y/N)"
+      if ($reply -notmatch '^[Yy](es)?$') { exit 0 }
+    } else {
+      Write-Info "Updating gb $installedVersion -> $version  (at $installedPath)"
     }
-    Write-Info "Updating gb $installedVersion -> $version  (at $installedPath)"
   } else {
     Write-Info "Installing gb $version"
   }
@@ -182,7 +212,11 @@ function Main {
     Add-ToUserPath $installDir
 
     if ($installedVersion) {
-      Write-Success "gb updated $installedVersion -> $version"
+      if ($installedVersion -eq $version) {
+        Write-Success "gb $version reinstalled successfully"
+      } else {
+        Write-Success "gb updated $installedVersion -> $version"
+      }
     } else {
       Write-Success "gb $version installed successfully"
     }

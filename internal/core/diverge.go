@@ -21,6 +21,16 @@ type DivergeResult struct {
 	Error       string
 }
 
+// resolveRemoteAndBranch splits an explicit `remote/branch` ref for divergence
+// checks, validating the prefix against the repo's real remotes. Divergence is
+// always measured against a remote, so a bare branch falls back to defaultRemote.
+func resolveRemoteAndBranch(dir, branchArg, defaultRemote string) (remote, branch string) {
+	if r, b, ok := splitRemoteBranch(dir, branchArg); ok {
+		return r, b
+	}
+	return defaultRemote, branchArg
+}
+
 func getTrackingRef(dir string) (string, error) {
 	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
 	cmd.Dir = dir

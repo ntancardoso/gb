@@ -25,12 +25,14 @@ type repoPreflightInfo struct {
 	DirtyStatus string
 }
 
-func syncBranch(ctx context.Context, root, branch, mode string, workers int, cfg *Config) error {
-	remote := cfg.Remote
+func syncBranch(ctx context.Context, root, branch, posBranch, mode string, workers int, cfg *Config) error {
 	repos, total := discoverRepos(root, workers, cfg, false)
 	if repos == nil {
 		return nil
 	}
+
+	plan := classifyReset(branch, posBranch, cfg.Remote, cfg.RemoteExplicit)
+	displayRef := plan.displayRef()
 
 	if mode == "hard" || mode == "rebase" {
 		fileInfo, statErr := os.Stdin.Stat()
@@ -39,13 +41,13 @@ func syncBranch(ctx context.Context, root, branch, mode string, workers int, cfg
 		}
 
 		dirtyRepos := preflightScan(ctx, repos, workers)
-		if !PromptConfirmDestructive(operationDescription(mode, branch, remote), len(repos), dirtyRepos) {
+		if !PromptConfirmDestructive(operationDescription(mode, displayRef), len(repos), dirtyRepos) {
 			fmt.Println("Aborted.")
 			return nil
 		}
 	}
 
-	opDesc := operationDescription(mode, branch, remote)
+	opDesc := operationDescription(mode, displayRef)
 	fmt.Println(StyleInfo.Render(fmt.Sprintf("Found %d repos (filtered from %d discovered), running '%s' with %d workers...",
 		len(repos), total, opDesc, min(workers, len(repos)))))
 
@@ -61,7 +63,8 @@ func syncBranch(ctx context.Context, root, branch, mode string, workers int, cfg
 		progress.UpdateStatus(r.RelPath, statusProcessing, "")
 
 		logFile, _ := logManager.CreateLogFile(r.RelPath)
-		res := processSingleReset(r, branch, mode, remote, logFile)
+		target := finalizeResetTarget(plan, r.Path)
+		res := processSingleReset(r, target, mode, logFile)
 		if logFile != nil {
 			_ = logFile.Close()
 		}
@@ -123,14 +126,14 @@ func syncBranch(ctx context.Context, root, branch, mode string, workers int, cfg
 	return nil
 }
 
-func operationDescription(mode, branch, remote string) string {
+func operationDescription(mode, ref string) string {
 	switch mode {
 	case "soft":
-		return fmt.Sprintf("git reset --soft %s/%s", remote, branch)
+		return fmt.Sprintf("git reset --soft %s", ref)
 	case "hard":
-		return fmt.Sprintf("git reset --hard %s/%s", remote, branch)
+		return fmt.Sprintf("git reset --hard %s", ref)
 	case "rebase":
-		return fmt.Sprintf("git rebase %s/%s", remote, branch)
+		return fmt.Sprintf("git rebase %s", ref)
 	}
 	return "unknown operation"
 }
@@ -186,21 +189,99 @@ func getDirtyStatus(dir string) string {
 	return "changes"
 }
 
-func processSingleReset(repo RepoInfo, branch, mode, remote string, logFile *os.File) ResetResult {
+// resetTarget is the resolved destination of a reset/rebase in a single repo.
+type resetTarget struct {
+	isRemote       bool
+	remote         string // valid only when isRemote
+	branch         string
+	fallbackRemote string // local mode only: remote to try if the local branch is missing
+	verified       bool   // remote existence + branch presence already confirmed (skip re-probe)
+}
+
+func (t resetTarget) ref() string {
+	if t.isRemote {
+		return t.remote + "/" + t.branch
+	}
+	return t.branch
+}
+
+// resetPlan is the remote/branch decision derivable from the CLI args alone,
+// before any repo is inspected. It is the single source of truth for both the
+// human-facing display (displayRef) and the per-repo target (finalizeResetTarget).
+type resetPlan struct {
+	explicitRemote string // two-token or -r remote; "" => auto (inline-or-local, per repo)
+	branch         string // branch component when explicitRemote != ""
+	arg            string // raw arg, used in auto mode
+	fallbackRemote string // default remote for the local fallback in auto mode
+}
+
+// classifyReset interprets a reset/rebase argument the way `git reset` does:
+//   - explicit two-token form (`origin main`) → remote `origin`, branch `main`
+//   - explicit -r flag → that remote, branch is the whole arg
+//   - otherwise auto: inline `remote/branch` where the prefix is a real remote,
+//     else the local ref named by the whole arg (with defaultRemote as fallback).
+func classifyReset(arg, posBranch, flagRemote string, flagRemoteSet bool) resetPlan {
+	if posBranch != "" {
+		return resetPlan{explicitRemote: arg, branch: posBranch}
+	}
+	if flagRemoteSet {
+		return resetPlan{explicitRemote: flagRemote, branch: arg}
+	}
+	return resetPlan{arg: arg, fallbackRemote: flagRemote}
+}
+
+// displayRef renders the human-facing target derived purely from the args. For
+// the auto-local case it spells out the remote fallback so the destructive
+// confirmation prompt and summary never understate what may run.
+func (p resetPlan) displayRef() string {
+	if p.explicitRemote != "" {
+		return p.explicitRemote + "/" + p.branch
+	}
+	if strings.Contains(p.arg, "/") {
+		return p.arg
+	}
+	if p.fallbackRemote != "" {
+		return fmt.Sprintf("%s (or %s/%s if not a local branch)", p.arg, p.fallbackRemote, p.arg)
+	}
+	return p.arg
+}
+
+// finalizeResetTarget resolves a plan against a single repo's remotes.
+func finalizeResetTarget(plan resetPlan, dir string) resetTarget {
+	if plan.explicitRemote != "" {
+		return resetTarget{isRemote: true, remote: plan.explicitRemote, branch: plan.branch}
+	}
+	if remote, branch, ok := splitRemoteBranch(dir, plan.arg); ok {
+		return resetTarget{isRemote: true, remote: remote, branch: branch}
+	}
+	return resetTarget{isRemote: false, branch: plan.arg, fallbackRemote: plan.fallbackRemote}
+}
+
+// resolveResetTarget is the per-repo entry point: classify the args, then resolve
+// against this repo.
+func resolveResetTarget(dir, arg, posBranch, flagRemote string, flagRemoteSet bool) resetTarget {
+	return finalizeResetTarget(classifyReset(arg, posBranch, flagRemote, flagRemoteSet), dir)
+}
+
+// splitRemoteBranch splits `remote/branch` only when the prefix is a real remote
+// in dir. Shared by reset and divergence so the parsing rule lives in one place.
+func splitRemoteBranch(dir, arg string) (remote, branch string, ok bool) {
+	if i := strings.Index(arg, "/"); i > 0 && i < len(arg)-1 {
+		if candidate := arg[:i]; checkRemoteExists(dir, candidate) {
+			return candidate, arg[i+1:], true
+		}
+	}
+	return "", "", false
+}
+
+func processSingleReset(repo RepoInfo, target resetTarget, mode string, logFile *os.File) ResetResult {
 	log := func(format string, args ...any) {
 		if logFile != nil {
 			_, _ = fmt.Fprintf(logFile, format+"\n", args...)
 		}
 	}
 
-	remote, branch = resolveRemoteAndBranch(repo.Path, branch, remote)
 	log("=== Processing %s ===", repo.RelPath)
-	log("Target branch: %s, Mode: %s, Remote: %s", branch, mode, remote)
-
-	if !checkRemoteExists(repo.Path, remote) {
-		log("Skipping: no %s remote", remote)
-		return ResetResult{RelPath: repo.RelPath, Skipped: true, SkipReason: "no " + remote + " remote"}
-	}
 
 	if !checkHasCommits(repo.Path) {
 		log("Skipping: no commits")
@@ -212,46 +293,97 @@ func processSingleReset(repo RepoInfo, branch, mode, remote string, logFile *os.
 		return ResetResult{RelPath: repo.RelPath, Skipped: true, SkipReason: "detached HEAD"}
 	}
 
-	found, netErr := checkBranchOnRemote(repo.Path, branch, remote)
-	if netErr != nil {
-		log("Error checking remote branch: %v", netErr)
-		return ResetResult{RelPath: repo.RelPath, Success: false, Error: fmt.Sprintf("network error: %v", netErr)}
-	}
-	if !found {
-		log("Skipping: branch not on %s", remote)
-		return ResetResult{RelPath: repo.RelPath, Skipped: true, SkipReason: "branch not on " + remote}
+	if !target.isRemote {
+		effective, res, done := resolveLocalTarget(repo, target, log)
+		if done {
+			return res
+		}
+		target = effective
 	}
 
-	log("Fetching to update %s/%s ref", remote, branch)
-	if fetchErr := fetchBranchFromRemote(repo.Path, branch, remote, logFile); fetchErr != nil {
-		log("Fetch failed: %v", fetchErr)
-		return ResetResult{RelPath: repo.RelPath, Success: false, Error: "fetch failed"}
+	log("Target: %s, Mode: %s", target.ref(), mode)
+
+	if target.isRemote {
+		if !target.verified {
+			if !checkRemoteExists(repo.Path, target.remote) {
+				log("Skipping: no %s remote", target.remote)
+				return ResetResult{RelPath: repo.RelPath, Skipped: true, SkipReason: "no " + target.remote + " remote"}
+			}
+
+			found, netErr := checkBranchOnRemote(repo.Path, target.branch, target.remote)
+			if netErr != nil {
+				log("Error checking remote branch: %v", netErr)
+				return ResetResult{RelPath: repo.RelPath, Success: false, Error: fmt.Sprintf("network error: %v", netErr)}
+			}
+			if !found {
+				log("Skipping: branch not on %s", target.remote)
+				return ResetResult{RelPath: repo.RelPath, Skipped: true, SkipReason: "branch not on " + target.remote}
+			}
+		}
+
+		log("Fetching to update %s ref", target.ref())
+		if fetchErr := fetchBranchFromRemote(repo.Path, target.branch, target.remote, logFile); fetchErr != nil {
+			log("Fetch failed: %v", fetchErr)
+			return ResetResult{RelPath: repo.RelPath, Success: false, Error: "fetch failed"}
+		}
 	}
 
-	if mode == "soft" && checkAlreadyAtTarget(repo.Path, branch, remote) {
+	if mode == "soft" && checkAlreadyAtTarget(repo.Path, target.ref()) {
 		log("Skipping: already up to date")
 		return ResetResult{RelPath: repo.RelPath, Skipped: true, SkipReason: "already up to date"}
 	}
 
 	switch mode {
 	case "hard":
-		return doHardReset(repo, branch, remote, logFile, log)
+		return doHardReset(repo, target, logFile, log)
 	case "soft":
-		return doSoftReset(repo, branch, remote, logFile, log)
+		return doSoftReset(repo, target, logFile, log)
 	case "rebase":
-		return doRebase(repo, branch, remote, logFile, log)
+		return doRebase(repo, target, logFile, log)
 	}
 	return ResetResult{RelPath: repo.RelPath, Success: false, Error: "unknown mode"}
 }
 
-func doHardReset(repo RepoInfo, branch, remote string, logFile *os.File, log func(string, ...any)) ResetResult {
+// resolveLocalTarget settles a local-mode target against a single repo. If the
+// local branch exists it stays local; otherwise it falls back to the default
+// remote when the branch is present there. Returns done=true with a skip result
+// when the branch exists neither locally nor on the remote.
+func resolveLocalTarget(repo RepoInfo, target resetTarget, log func(string, ...any)) (resetTarget, ResetResult, bool) {
+	if checkLocalBranchExists(repo.Path, target.branch) {
+		return target, ResetResult{}, false
+	}
+
+	remote := target.fallbackRemote
+	if remote != "" && checkRemoteExists(repo.Path, remote) {
+		found, netErr := checkBranchOnRemote(repo.Path, target.branch, remote)
+		if netErr != nil {
+			log("Error checking remote branch: %v", netErr)
+			return target, ResetResult{RelPath: repo.RelPath, Success: false, Error: fmt.Sprintf("network error: %v", netErr)}, true
+		}
+		if found {
+			log("Local branch %s missing; falling back to %s/%s", target.branch, remote, target.branch)
+			return resetTarget{isRemote: true, remote: remote, branch: target.branch, verified: true}, ResetResult{}, false
+		}
+	}
+
+	log("Skipping: branch %s not found locally or on %s", target.branch, remote)
+	return target, ResetResult{RelPath: repo.RelPath, Skipped: true, SkipReason: "branch " + target.branch + " not found locally or on " + remote}, true
+}
+
+func checkLocalBranchExists(dir, branch string) bool {
+	cmd := exec.Command("git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+	cmd.Dir = dir
+	return cmd.Run() == nil
+}
+
+func doHardReset(repo RepoInfo, target resetTarget, logFile *os.File, log func(string, ...any)) ResetResult {
 	if inProgress, opName := checkMidOperation(repo.Path); inProgress {
 		log("Skipping: mid-%s operation in progress", opName)
 		return ResetResult{RelPath: repo.RelPath, Skipped: true, SkipReason: fmt.Sprintf("mid-%s in progress", opName)}
 	}
 
-	log("Executing: git reset --hard %s/%s", remote, branch)
-	cmd := exec.Command("git", "reset", "--hard", remote+"/"+branch)
+	log("Executing: git reset --hard %s", target.ref())
+	cmd := exec.Command("git", "reset", "--hard", target.ref())
 	cmd.Dir = repo.Path
 	if logFile != nil {
 		cmd.Stdout = logFile
@@ -265,7 +397,7 @@ func doHardReset(repo RepoInfo, branch, remote string, logFile *os.File, log fun
 	return ResetResult{RelPath: repo.RelPath, Success: true}
 }
 
-func doSoftReset(repo RepoInfo, branch, remote string, logFile *os.File, log func(string, ...any)) ResetResult {
+func doSoftReset(repo RepoInfo, target resetTarget, logFile *os.File, log func(string, ...any)) ResetResult {
 	warning := ""
 	stagedCheck := exec.Command("git", "diff", "--cached", "--quiet")
 	stagedCheck.Dir = repo.Path
@@ -274,8 +406,8 @@ func doSoftReset(repo RepoInfo, branch, remote string, logFile *os.File, log fun
 		log("Warning: staged changes exist; soft reset will merge staged state")
 	}
 
-	log("Executing: git reset --soft %s/%s", remote, branch)
-	cmd := exec.Command("git", "reset", "--soft", remote+"/"+branch)
+	log("Executing: git reset --soft %s", target.ref())
+	cmd := exec.Command("git", "reset", "--soft", target.ref())
 	cmd.Dir = repo.Path
 	if logFile != nil {
 		cmd.Stdout = logFile
@@ -289,7 +421,7 @@ func doSoftReset(repo RepoInfo, branch, remote string, logFile *os.File, log fun
 	return ResetResult{RelPath: repo.RelPath, Success: true, Warning: warning}
 }
 
-func doRebase(repo RepoInfo, branch, remote string, logFile *os.File, log func(string, ...any)) ResetResult {
+func doRebase(repo RepoInfo, target resetTarget, logFile *os.File, log func(string, ...any)) ResetResult {
 	if checkRebaseInProgress(repo.Path) {
 		log("Skipping: rebase already in progress")
 		return ResetResult{RelPath: repo.RelPath, Skipped: true, SkipReason: "rebase already in progress"}
@@ -300,8 +432,8 @@ func doRebase(repo RepoInfo, branch, remote string, logFile *os.File, log func(s
 		return ResetResult{RelPath: repo.RelPath, Success: false, Error: "working tree must be clean"}
 	}
 
-	log("Executing: git rebase %s/%s", remote, branch)
-	cmd := exec.Command("git", "rebase", remote+"/"+branch)
+	log("Executing: git rebase %s", target.ref())
+	cmd := exec.Command("git", "rebase", target.ref())
 	cmd.Dir = repo.Path
 	if logFile != nil {
 		cmd.Stdout = logFile
@@ -324,22 +456,6 @@ func doRebase(repo RepoInfo, branch, remote string, logFile *os.File, log func(s
 	}
 	log("Rebase completed successfully")
 	return ResetResult{RelPath: repo.RelPath, Success: true}
-}
-
-func resolveRemoteAndBranch(dir, branchArg, defaultRemote string) (remote, branch string) {
-	idx := strings.Index(branchArg, "/")
-	if idx <= 0 {
-		return defaultRemote, branchArg
-	}
-	candidate := branchArg[:idx]
-	rest := branchArg[idx+1:]
-	if rest == "" {
-		return defaultRemote, branchArg
-	}
-	if checkRemoteExists(dir, candidate) {
-		return candidate, rest
-	}
-	return defaultRemote, branchArg
 }
 
 func checkRemoteExists(dir, remote string) bool {
@@ -416,7 +532,7 @@ func checkRebaseInProgress(dir string) bool {
 	return false
 }
 
-func checkAlreadyAtTarget(dir, branch, remote string) bool {
+func checkAlreadyAtTarget(dir, ref string) bool {
 	headCmd := exec.Command("git", "rev-parse", "HEAD")
 	headCmd.Dir = dir
 	headOut, err := headCmd.Output()
@@ -424,14 +540,14 @@ func checkAlreadyAtTarget(dir, branch, remote string) bool {
 		return false
 	}
 
-	remoteCmd := exec.Command("git", "rev-parse", remote+"/"+branch)
-	remoteCmd.Dir = dir
-	remoteOut, err := remoteCmd.Output()
+	targetCmd := exec.Command("git", "rev-parse", ref)
+	targetCmd.Dir = dir
+	targetOut, err := targetCmd.Output()
 	if err != nil {
 		return false
 	}
 
-	return strings.TrimSpace(string(headOut)) == strings.TrimSpace(string(remoteOut))
+	return strings.TrimSpace(string(headOut)) == strings.TrimSpace(string(targetOut))
 }
 
 func fetchBranchFromRemote(dir, branch, remote string, logFile *os.File) error {

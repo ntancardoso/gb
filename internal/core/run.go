@@ -38,6 +38,7 @@ type Config struct {
 	PageSize          int
 	IncludeWorktrees  bool
 	Remote            string
+	RemoteExplicit    bool
 }
 
 func hasGlobMeta(s string) bool {
@@ -311,14 +312,14 @@ func Run(ctx context.Context, args []string) error {
 	showVersion := fs.Bool("version", false, "Show version information")
 	fs.BoolVar(showVersion, "v", false, "Show version (shorthand)")
 
-	resetSoft := fs.String("reset-soft", "", "Soft reset all repos to <remote>/<branch>")
-	fs.StringVar(resetSoft, "rs", "", "Soft reset to <remote>/<branch> (shorthand)")
+	resetSoft := fs.String("reset-soft", "", "Soft reset all repos to <branch> (local), or <remote>/<branch> when a remote is given")
+	fs.StringVar(resetSoft, "rs", "", "Soft reset to <branch> / <remote>/<branch> (shorthand)")
 
-	resetHard := fs.String("reset-hard", "", "Hard reset all repos to <remote>/<branch> (destructive, confirms first)")
-	fs.StringVar(resetHard, "rh", "", "Hard reset to <remote>/<branch> (shorthand)")
+	resetHard := fs.String("reset-hard", "", "Hard reset all repos to <branch> (local), or <remote>/<branch> when a remote is given (destructive, confirms first)")
+	fs.StringVar(resetHard, "rh", "", "Hard reset to <branch> / <remote>/<branch> (shorthand)")
 
-	rebaseBranch := fs.String("rebase", "", "Rebase all repos onto <remote>/<branch> (confirms first)")
-	fs.StringVar(rebaseBranch, "rb", "", "Rebase onto <remote>/<branch> (shorthand)")
+	rebaseBranch := fs.String("rebase", "", "Rebase all repos onto <branch> (local), or <remote>/<branch> when a remote is given (confirms first)")
+	fs.StringVar(rebaseBranch, "rb", "", "Rebase onto <branch> / <remote>/<branch> (shorthand)")
 
 	includeWorktrees := fs.Bool("include-worktrees", false, "Include worktree repos in operations (default: excluded)")
 	fs.BoolVar(includeWorktrees, "iw", false, "Include worktree repos (shorthand)")
@@ -359,9 +360,9 @@ func Run(ctx context.Context, args []string) error {
 		fmt.Println("  -e, --excludeDirs string   Comma-separated list of directories to exclude from execution")
 		fmt.Println("  -i, --includeDirs string")
 		fmt.Println("                          Comma-separated list of directories to include in execution")
-		fmt.Println("  -rs, --reset-soft string  Soft reset all repos to <remote>/<branch>")
-		fmt.Println("  -rh, --reset-hard string  Hard reset all repos to <remote>/<branch> (destructive, confirms first)")
-		fmt.Println("  -rb, --rebase string      Rebase all repos onto <remote>/<branch> (confirms first)")
+		fmt.Println("  -rs, --reset-soft string  Soft reset all repos to <branch> (local), or <remote>/<branch> when a remote is given")
+		fmt.Println("  -rh, --reset-hard string  Hard reset all repos to <branch> (local), or <remote>/<branch> when a remote is given (destructive)")
+		fmt.Println("  -rb, --rebase string      Rebase all repos onto <branch> (local), or <remote>/<branch> when a remote is given (confirms first)")
 		fmt.Println("  -ib, --includeBranches string")
 		fmt.Println("                            Only operate on repos currently on these branches (comma-separated)")
 		fmt.Println("  -eb, --excludeBranches string")
@@ -387,9 +388,10 @@ func Run(ctx context.Context, args []string) error {
 		fmt.Println("  gb -sh \"ls -la\"              Execute 'ls -la' shell command in all repositories")
 		fmt.Println("  gb -sh \"pwd\" -i \"vendor\"     Execute 'pwd' only in vendor directory")
 		fmt.Println("  gb --shell \"mkdir tmp\"      Execute 'mkdir tmp' shell command in all repositories")
-		fmt.Println("  gb -rs main              Soft reset all repos to origin/main")
-		fmt.Println("  gb -rh feature/xyz       Hard reset all repos to origin/feature/xyz (with confirmation)")
-		fmt.Println("  gb -rb develop           Rebase all repos onto origin/develop (with confirmation)")
+		fmt.Println("  gb -rs main              Soft reset all repos to local main")
+		fmt.Println("  gb -rs origin/main       Soft reset all repos to origin/main (inline remote)")
+		fmt.Println("  gb -rh origin main       Hard reset all repos to origin/main (two-token form)")
+		fmt.Println("  gb -rb develop           Rebase all repos onto local develop (with confirmation)")
 		fmt.Println("  gb -rs main -r upstream  Soft reset all repos to upstream/main")
 		fmt.Println("  gb -ib main -l           List branches, only repos currently on main")
 		fmt.Println("  gb -eb main -c \"fetch origin\"  Fetch in all repos except those on main")
@@ -433,6 +435,12 @@ func Run(ctx context.Context, args []string) error {
 		return err
 	}
 
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "remote" || f.Name == "r" {
+			cfg.RemoteExplicit = true
+		}
+	})
+
 	root, _ := os.Getwd()
 	root = resolveRoot(root)
 
@@ -462,16 +470,27 @@ func Run(ctx context.Context, args []string) error {
 		return checkTrack(ctx, root, *workers, cfg)
 	}
 
+	posBranch := ""
+	if fs.NArg() >= 1 {
+		posBranch = fs.Arg(0)
+	}
+
+	if resetArg := firstNonEmpty(*resetSoft, *resetHard, *rebaseBranch); resetArg != "" {
+		if err := validateResetArgs(resetArg, posBranch, fs.NArg(), cfg.RemoteExplicit); err != nil {
+			return err
+		}
+	}
+
 	if *resetSoft != "" {
-		return syncBranch(ctx, root, *resetSoft, "soft", *workers, cfg)
+		return syncBranch(ctx, root, *resetSoft, posBranch, "soft", *workers, cfg)
 	}
 
 	if *resetHard != "" {
-		return syncBranch(ctx, root, *resetHard, "hard", *workers, cfg)
+		return syncBranch(ctx, root, *resetHard, posBranch, "hard", *workers, cfg)
 	}
 
 	if *rebaseBranch != "" {
-		return syncBranch(ctx, root, *rebaseBranch, "rebase", *workers, cfg)
+		return syncBranch(ctx, root, *rebaseBranch, posBranch, "rebase", *workers, cfg)
 	}
 
 	if *wtList {
@@ -504,6 +523,37 @@ func Run(ctx context.Context, args []string) error {
 
 func IsSilentError(err error) bool {
 	return errors.Is(err, errReposFailed)
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// validateResetArgs rejects ambiguous reset/rebase invocations before any repo
+// work begins, so a typo or conflicting remote spec fails fast instead of
+// silently resolving to a surprising target.
+func validateResetArgs(flagVal, posBranch string, nargs int, remoteExplicit bool) error {
+	if nargs > 1 {
+		return fmt.Errorf("too many arguments; reset/rebase takes at most '<remote> <branch>'")
+	}
+	if posBranch != "" {
+		if remoteExplicit {
+			return fmt.Errorf("specify the remote either as '<remote> <branch>' or with -r, not both")
+		}
+		if strings.Contains(flagVal, "/") {
+			return fmt.Errorf("two-token form: first argument must be a bare remote name, got %q", flagVal)
+		}
+		return nil
+	}
+	if remoteExplicit && strings.Contains(flagVal, "/") {
+		return fmt.Errorf("-r already sets the remote; drop the inline prefix from %q or use the inline form without -r", flagVal)
+	}
+	return nil
 }
 
 func parseCommaSeparated(input string, defaultValue []string) []string {

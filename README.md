@@ -8,7 +8,7 @@ A fast CLI tool for executing git and shell commands across multiple repositorie
 
 - Run any git or shell command across all repos at once
 - Switch all repos to the same branch in parallel, falling back to a default if the branch doesn't exist
-- Soft reset, hard reset, or rebase all repos to match `<remote>/<branch>`
+- Soft reset, hard reset, or rebase all repos to a local `<branch>`, or to `<remote>/<branch>` when a remote is referenced (follows ordinary `git reset` semantics)
 - List current branches across all repos
 - Recursively discovers git repos in subdirectories
 - Configurable worker pool for parallel execution
@@ -166,46 +166,51 @@ Shows what remote branch each repo's current local branch is configured to track
 
 ### Sync from Remote
 
-Sync all repos to match a branch on a remote across your entire workspace at once. The default remote is `origin`; use `-r` to target a different one.
+Reset or rebase all repos across your entire workspace at once, following ordinary `git reset` semantics: a bare branch name targets the **local** branch, and a remote is used only when you reference one — by prefixing the branch (`origin/main`), passing it as a second argument (`origin main`), or with `-r <remote>`.
 
-All three modes share the same pre-checks: repos are auto-switched to the target branch first (fetching from the remote if needed). Repos are **skipped** (not failed) when the branch doesn't exist on the remote, there is no matching remote, HEAD is detached, or the repo is already up to date.
+All modes share the same pre-checks. In **local** mode a repo is skipped when the branch exists neither locally nor on the default remote (`origin`); if it's missing locally but present on the remote, gb falls back to `<remote>/<branch>` automatically. In **remote** mode a repo is skipped when the branch isn't on that remote, the remote doesn't exist, HEAD is detached, or the repo is already up to date.
 
-**Soft reset** — move HEAD to `<remote>/<branch>`, keep working tree and index intact:
+**Soft reset** — move HEAD to the target, keep working tree and index intact:
 ```bash
-gb -rs main              # Soft reset to origin/main
+gb -rs main              # Soft reset to local main
 gb --reset-soft main     # Long form
-gb -rs feature/xyz       # Works with any branch name
-gb -rs main -r upstream  # Use a different remote
-gb -rs upstream/main     # Inline remote prefix (equivalent)
+gb -rs origin/main       # Inline remote prefix → origin/main
+gb -rs origin main       # Two-token form → origin/main
+gb -rs main -r upstream  # Use a different remote → upstream/main
 ```
 Safe for CI/non-interactive use. If a repo has staged changes before the reset, a warning is noted in the log output.
 
-**Hard reset** — discard all local changes and reset to `<remote>/<branch>`:
+**Hard reset** — discard all local changes and reset to the target:
 ```bash
-gb -rh main              # Short form
+gb -rh main              # Hard reset to local main
 gb --reset-hard main     # Long form
+gb -rh origin/main       # Hard reset to origin/main
 gb -rh main -r upstream  # Hard reset to upstream/main
 ```
 > **Destructive.** Requires an interactive terminal. Before executing, gb scans all repos for dirty state and shows a confirmation prompt listing any repos whose changes will be discarded. Repos that are mid-merge, mid-cherry-pick, or mid-revert are automatically skipped.
 
-**Rebase** — rebase local commits onto `<remote>/<branch>`:
+**Rebase** — rebase local commits onto the target:
 ```bash
-gb -rb develop           # Short form
+gb -rb develop           # Rebase onto local develop
 gb --rebase develop      # Long form
+gb -rb origin/develop    # Rebase onto origin/develop
 gb -rb develop -r upstream  # Rebase onto upstream/develop
 ```
 > **Requires interactive terminal.** If a conflict occurs in any repo, `git rebase --abort` is run automatically to restore a clean state; the repo is reported as failed.
 
-**Inline remote prefix (reset/rebase only):**
+**Referencing a remote (reset/rebase):**
 
-For reset and rebase, instead of `-r <remote>`, you can prefix the branch argument with the remote name. The prefix is validated against the repo's actual remotes, so branch names containing `/` (e.g. `feat/x`) are handled correctly.
+Three equivalent ways to target a remote-tracking branch. The remote name is validated against the repo's actual remotes, so branch names containing `/` (e.g. `feat/x`) are handled correctly.
 
-| Command | Equivalent to |
-|---------|--------------|
-| `gb -rs origin/main` | `gb -rs main` |
-| `gb -rs upstream/main` | `gb -rs main -r upstream` |
-| `gb -rs origin/feat/x` | `gb -rs feat/x` |
-| `gb -rs feat/x` | `gb -rs feat/x -r origin` |
+| Command | Target |
+|---------|--------|
+| `gb -rs main` | local `main` |
+| `gb -rs feat/x` | local `feat/x` |
+| `gb -rs origin/main` | `origin/main` (inline prefix) |
+| `gb -rs origin main` | `origin/main` (two-token) |
+| `gb -rs main -r upstream` | `upstream/main` (`-r` flag) |
+
+Specify the remote exactly one way: `-r` requires a bare branch (no inline prefix), the two-token form requires a bare remote name, and combining `-r` with either is rejected with an error rather than silently producing a wrong target. When a bare branch (local mode) doesn't exist locally in a repo, gb falls back to `<remote>/<branch>` — the confirmation prompt for `-rh`/`-rb` discloses this fallback.
 
 **CI / non-interactive use:**
 ```bash
@@ -293,10 +298,10 @@ Options:
   -ps, --size int         Number of repos to display per page (default 20)
   -e, --excludeDirs string   Comma-separated list of directories to exclude from execution
   -i, --includeDirs string   Comma-separated list of directories to include in execution (glob patterns supported: *, ?, [...])
-  -rs, --reset-soft string   Soft reset all repos to <remote>/<branch>
-  -rh, --reset-hard string   Hard reset all repos to <remote>/<branch> (destructive, confirms first)
-  -rb, --rebase string       Rebase all repos onto <remote>/<branch> (confirms first)
-  -r, --remote string        Remote name to use when fetching (switch, reset, rebase) (default: origin)
+  -rs, --reset-soft string   Soft reset all repos to <branch> (local), or <remote>/<branch> when a remote is given
+  -rh, --reset-hard string   Hard reset all repos to <branch> (local), or <remote>/<branch> when a remote is given (destructive)
+  -rb, --rebase string       Rebase all repos onto <branch> (local), or <remote>/<branch> when a remote is given (confirms first)
+  -r, --remote string        Remote name to use when fetching (switch), and to force remote reset/rebase (default: origin)
   -ib, --includeBranches string
                              Only operate on repos currently on these branches (comma-separated, glob patterns supported)
   -eb, --excludeBranches string
@@ -322,11 +327,12 @@ Examples:
   gb --cmd "fetch origin"               Execute 'git fetch origin' in all repositories
   gb -sh "ls -la"                       Execute 'ls -la' shell command in all repositories
   gb --shell "mkdir tmp"                Execute 'mkdir tmp' shell command in all repositories
-  gb -rs main                           Soft reset all repos to origin/main
+  gb -rs main                           Soft reset all repos to local main
+  gb -rs origin/main                    Soft reset all repos to origin/main (inline remote)
+  gb -rs origin main                    Soft reset all repos to origin/main (two-token)
   gb -rs main -r upstream               Soft reset all repos to upstream/main
-  gb -rs upstream/main                  Soft reset all repos to upstream/main (inline remote)
-  gb -rh feature/xyz                    Hard reset all repos to origin/feature/xyz (with confirmation)
-  gb -rb develop                        Rebase all repos onto origin/develop (with confirmation)
+  gb -rh origin/feature/xyz             Hard reset all repos to origin/feature/xyz (with confirmation)
+  gb -rb develop                        Rebase all repos onto local develop (with confirmation)
   gb -dv                                Check divergence vs each repo's tracked branch
   gb -dv main                           Check divergence vs origin/main across all repos
   gb -dv main -r upstream               Check divergence vs upstream/main
@@ -393,11 +399,11 @@ gb -c "fetch origin"
 
 5. **Sync all repos to match origin/15.0 (discard local changes):**
 ```bash
-gb -rh 15.0
+gb -rh origin/15.0
 ```
 Or keep local changes staged instead:
 ```bash
-gb -rs 15.0
+gb -rs origin/15.0
 ```
 Or sync from a different remote:
 ```bash

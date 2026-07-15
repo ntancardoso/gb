@@ -67,7 +67,7 @@ func worktreeCreate(ctx context.Context, root, branch, base string, workers int,
 	}
 
 	progress := NewProgressState(repos, fmt.Sprintf("Creating worktree '%s'", branch), cfg.PageSize)
-	stop := progress.start()
+	progress.StartInput()
 
 	results := runPool(ctx, repos, workers, func(ctx context.Context, r RepoInfo) CommandResult {
 		progress.UpdateStatus(r.RelPath, statusProcessing, "")
@@ -138,16 +138,13 @@ func worktreeCreate(ctx context.Context, root, branch, base string, workers int,
 		}
 	}
 
-	stop()
-
-	fmt.Println("\n" + StyleBold.Render("--- Summary ---"))
-	fmt.Printf("Created worktrees for '%s': %s succeeded, %s skipped, %s failed\n",
+	summary := StyleBold.Render("--- Summary ---") + "\n" + fmt.Sprintf("Created worktrees for '%s': %s succeeded, %s skipped, %s failed",
 		branch,
 		StyleSuccess.Render(fmt.Sprintf("%d", success)),
 		StyleSkipped.Render(fmt.Sprintf("%d", skipped)),
 		StyleFailed.Render(fmt.Sprintf("%d", failed)))
 
-	if PromptViewLogs() {
+	if progress.FinishAndPromptViewLogs(summary) {
 		DisplayLogs(logManager, results)
 	} else {
 		fmt.Printf("\nLogs are available at: %s\n", logManager.GetTempDir())
@@ -174,7 +171,7 @@ func worktreeRemove(ctx context.Context, root, branch string, workers int, cfg *
 	}
 
 	progress := NewProgressState(repos, fmt.Sprintf("Removing worktree '%s'", branch), cfg.PageSize)
-	stop := progress.start()
+	progress.StartInput()
 
 	results := runPool(ctx, repos, workers, func(ctx context.Context, r RepoInfo) CommandResult {
 		progress.UpdateStatus(r.RelPath, statusProcessing, "")
@@ -204,16 +201,13 @@ func worktreeRemove(ctx context.Context, root, branch string, workers int, cfg *
 		}
 	}
 
-	stop()
-
-	fmt.Println("\n" + StyleBold.Render("--- Summary ---"))
-	fmt.Printf("Removed worktrees for '%s': %s succeeded, %s skipped, %s failed\n",
+	summary := StyleBold.Render("--- Summary ---") + "\n" + fmt.Sprintf("Removed worktrees for '%s': %s succeeded, %s skipped, %s failed",
 		branch,
 		StyleSuccess.Render(fmt.Sprintf("%d", success)),
 		StyleSkipped.Render(fmt.Sprintf("%d", skipped)),
 		StyleFailed.Render(fmt.Sprintf("%d", failed)))
 
-	if PromptViewLogs() {
+	if progress.FinishAndPromptViewLogs(summary) {
 		DisplayLogs(logManager, results)
 	} else {
 		fmt.Printf("\nLogs are available at: %s\n", logManager.GetTempDir())
@@ -256,8 +250,6 @@ func worktreeRemoveGlob(ctx context.Context, r RepoInfo, pattern string, out io.
 			continue
 		}
 		_, _ = fmt.Fprintf(out, "Removed worktree: %s\n", wtPath)
-		_ = os.Remove(filepath.Dir(wtPath))
-		_ = os.Remove(filepath.Dir(filepath.Dir(wtPath)))
 	}
 
 	if matched == 0 {
@@ -307,8 +299,6 @@ func worktreeRemoveExact(ctx context.Context, r RepoInfo, branch string, out io.
 		return CommandResult{RelPath: r.RelPath, Error: removeErr}
 	}
 	_, _ = fmt.Fprintf(out, "Removed worktree: %s\n", wtPath)
-	_ = os.Remove(filepath.Dir(wtPath))
-	_ = os.Remove(filepath.Dir(filepath.Dir(wtPath)))
 	progress.UpdateStatus(r.RelPath, statusCompleted, "")
 	return CommandResult{RelPath: r.RelPath}
 }
@@ -442,7 +432,12 @@ func copyFile(src, dst string) error {
 	}
 	defer func() { _ = in.Close() }()
 
-	out, err := os.Create(dst)
+	info, err := in.Stat()
+	if err != nil {
+		return err
+	}
+
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode().Perm())
 	if err != nil {
 		return err
 	}

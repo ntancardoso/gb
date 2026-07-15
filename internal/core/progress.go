@@ -23,6 +23,7 @@ const (
 
 type statusMsg struct{ relPath, state, message string }
 type doneMsg struct{}
+type promptMsg struct{ summary string }
 type tickMsg time.Time
 
 type repoStatus struct {
@@ -42,6 +43,10 @@ type model struct {
 	startTime time.Time
 	done      bool
 	opName    string
+	prompting bool
+	answered  bool
+	viewLogs  bool
+	summary   string
 }
 
 func newModel(repos []RepoInfo, opName string, pageSize int) model {
@@ -90,17 +95,38 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.done = true
 		return m, tea.Quit
 
+	case promptMsg:
+		m.done = true
+		m.prompting = true
+		m.summary = msg.summary
+		return m, nil
+
 	case tea.KeyMsg:
-		switch msg.String() {
+		key := msg.String()
+		switch key {
 		case "up", "pgup":
 			if m.page > 0 {
 				m.page--
 			}
+			return m, nil
 		case "down", "pgdown":
 			if m.page < m.totalPages()-1 {
 				m.page++
 			}
-		case "ctrl+c":
+			return m, nil
+		}
+		if m.prompting {
+			switch key {
+			case "y", "Y":
+				m.answered, m.viewLogs = true, true
+				return m, tea.Quit
+			case "n", "N", "enter", "esc", "ctrl+c":
+				m.answered, m.viewLogs = true, false
+				return m, tea.Quit
+			}
+			return m, nil
+		}
+		if key == "ctrl+c" {
 			return m, tea.Quit
 		}
 		return m, nil
@@ -111,6 +137,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case spinner.TickMsg:
+		if m.done {
+			return m, nil
+		}
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
@@ -121,6 +150,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case tickMsg:
+		if m.done {
+			return m, nil
+		}
 		return m, tickEvery()
 	}
 
@@ -157,6 +189,20 @@ func (m model) View() string {
 
 	if m.totalPages() > 1 {
 		fmt.Fprintf(&sb, "\n  Page %d/%d  ↑↓ PgUp/PgDn\n", m.page+1, m.totalPages())
+	}
+
+	if m.prompting {
+		sb.WriteString("\n" + m.summary + "\n\n")
+		prompt := "View detailed logs? (y/N)"
+		switch {
+		case m.answered && m.viewLogs:
+			prompt += ": y"
+		case m.answered:
+			prompt += ": n"
+		case m.totalPages() > 1:
+			prompt += "  " + StyleDim.Render("↑↓ PgUp/PgDn to page")
+		}
+		sb.WriteString(prompt + "\n")
 	}
 
 	return sb.String()
@@ -247,6 +293,8 @@ type ProgressState struct {
 	stopped      atomic.Bool
 	wg           sync.WaitGroup
 	stopOnce     sync.Once
+	finalModel   tea.Model // written only by the StartInput goroutine; read after wg.Wait
+	runErr       error
 }
 
 func NewProgressState(repos []RepoInfo, operationName string, pageSize int) *ProgressState {
@@ -278,7 +326,9 @@ func (ps *ProgressState) StartInput() {
 		return
 	}
 	ps.wg.Go(func() {
-		if _, err := ps.program.Run(); err != nil {
+		m, err := ps.program.Run()
+		ps.finalModel, ps.runErr = m, err
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "TUI error: %v\n", err)
 		}
 	})
@@ -305,9 +355,40 @@ func (ps *ProgressState) UpdateStatus(relPath, status, errorMsg string) {
 	fmt.Printf("%s: %s\n", relPath, status)
 }
 
-func (ps *ProgressState) start() func() {
-	ps.StartInput()
-	return ps.StopInput
+// FinishAndPromptViewLogs stops progress, shows the summary, and asks whether
+// to view detailed logs. In TUI mode the prompt runs inside the still-running
+// bubbletea program so the paging keys stay live; otherwise it falls back to a
+// plain summary print plus PromptViewLogs. Shares stopOnce with StopInput.
+func (ps *ProgressState) FinishAndPromptViewLogs(summary string) bool {
+	viewLogs, ran := false, false
+	ps.stopOnce.Do(func() {
+		ran = true
+		ps.stopped.Store(true)
+		if ps.program == nil || !stdinIsCharDevice() {
+			if ps.program != nil {
+				ps.program.Send(doneMsg{})
+			}
+			ps.wg.Wait()
+			fmt.Println("\n" + summary)
+			viewLogs = PromptViewLogs()
+			return
+		}
+		ps.program.Send(promptMsg{summary: summary})
+		ps.wg.Wait()
+		if m, ok := ps.finalModel.(model); ok && ps.runErr == nil && m.prompting {
+			viewLogs = m.viewLogs
+			return
+		}
+		// TUI exited before the prompt rendered (ctrl+c mid-run, Run error,
+		// external SIGINT): recover exactly as the non-TUI path does.
+		fmt.Println("\n" + summary)
+		viewLogs = PromptViewLogs()
+	})
+	if !ran {
+		fmt.Println("\n" + summary)
+		return PromptViewLogs()
+	}
+	return viewLogs
 }
 
 func progressStatusFromErr(err error) (string, string) {

@@ -1,11 +1,14 @@
 package core
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestProcessSingleDivergeUpToDate(t *testing.T) {
 	repoDir, _ := makeRepoWithRemote(t)
 	repo := RepoInfo{Path: repoDir, RelPath: "repo"}
-	res := processSingleDiverge(repo, "main", "origin")
+	res := processSingleDiverge(context.Background(), repo, "main", "origin")
 
 	if !res.Success {
 		t.Fatalf("expected success, got error: %s", res.Error)
@@ -36,7 +39,7 @@ func TestProcessSingleDivergeBehind(t *testing.T) {
 	runCmd(t, repoDir, "git", "fetch", "origin")
 
 	repo := RepoInfo{Path: repoDir, RelPath: "repo"}
-	res := processSingleDiverge(repo, "main", "origin")
+	res := processSingleDiverge(context.Background(), repo, "main", "origin")
 
 	if !res.Success {
 		t.Fatalf("expected success, got error: %s", res.Error)
@@ -54,7 +57,7 @@ func TestProcessSingleDivergeAhead(t *testing.T) {
 	runCmd(t, repoDir, "git", "commit", "-m", "local commit")
 
 	repo := RepoInfo{Path: repoDir, RelPath: "repo"}
-	res := processSingleDiverge(repo, "main", "origin")
+	res := processSingleDiverge(context.Background(), repo, "main", "origin")
 
 	if !res.Success {
 		t.Fatalf("expected success, got error: %s", res.Error)
@@ -85,7 +88,7 @@ func TestProcessSingleDivergeDiverged(t *testing.T) {
 	runCmd(t, repoDir, "git", "commit", "-m", "local commit")
 
 	repo := RepoInfo{Path: repoDir, RelPath: "repo"}
-	res := processSingleDiverge(repo, "main", "origin")
+	res := processSingleDiverge(context.Background(), repo, "main", "origin")
 
 	if !res.Success {
 		t.Fatalf("expected success, got error: %s", res.Error)
@@ -100,7 +103,7 @@ func TestProcessSingleDivergeTrackingBranch(t *testing.T) {
 	runCmd(t, repoDir, "git", "branch", "--set-upstream-to=origin/main", "main")
 
 	repo := RepoInfo{Path: repoDir, RelPath: "repo"}
-	res := processSingleDiverge(repo, "", "origin")
+	res := processSingleDiverge(context.Background(), repo, "", "origin")
 
 	if !res.Success {
 		t.Fatalf("expected success, got error=%q skipped=%v reason=%q", res.Error, res.Skipped, res.SkipReason)
@@ -117,7 +120,7 @@ func TestProcessSingleDivergeNoTracking(t *testing.T) {
 	repoDir, _ := makeRepoWithRemote(t)
 
 	repo := RepoInfo{Path: repoDir, RelPath: "repo"}
-	res := processSingleDiverge(repo, "", "origin")
+	res := processSingleDiverge(context.Background(), repo, "", "origin")
 
 	if res.Error != "" {
 		t.Fatalf("unexpected error: %s", res.Error)
@@ -132,7 +135,7 @@ func TestProcessSingleDivergeRemoteRefNotFound(t *testing.T) {
 	createGitRepo(t, repoDir)
 
 	repo := RepoInfo{Path: repoDir, RelPath: "repo"}
-	res := processSingleDiverge(repo, "main", "origin")
+	res := processSingleDiverge(context.Background(), repo, "main", "origin")
 
 	if res.Error != "" {
 		t.Fatalf("expected no error, got: %s", res.Error)

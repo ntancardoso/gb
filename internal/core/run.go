@@ -248,6 +248,7 @@ func reorderArgs(args []string) []string {
 				"-h": true, "--help": true,
 				"-iw": true, "--include-worktrees": true,
 				"-wl": true, "--worktree-list": true,
+				"-tr": true, "--track": true,
 			}
 			if !boolFlags[arg] && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
 				i++
@@ -435,11 +436,57 @@ func Run(ctx context.Context, args []string) error {
 		return err
 	}
 
+	divergeSet := false
 	fs.Visit(func(f *flag.Flag) {
 		if f.Name == "remote" || f.Name == "r" {
 			cfg.RemoteExplicit = true
 		}
+		if f.Name == "diverge" || f.Name == "dv" {
+			divergeSet = true
+		}
 	})
+
+	modes := []struct {
+		name string
+		set  bool
+	}{
+		{"-c/--cmd", *runCommand != ""},
+		{"-sh/--shell", *runShell != ""},
+		{"-l/--list", *listBranches},
+		{"-dv/--diverge", divergeSet},
+		{"-tr/--track", *trackUpstream},
+		{"-rs/--reset-soft", *resetSoft != ""},
+		{"-rh/--reset-hard", *resetHard != ""},
+		{"-rb/--rebase", *rebaseBranch != ""},
+		{"-wl/--worktree-list", *wtList},
+		{"-wc/--worktree-create", *wtCreate != ""},
+		{"-wr/--worktree-remove", *wtRemove != ""},
+		{"-wo/--worktree-open", *wtOpen != ""},
+	}
+	var selected []string
+	for _, m := range modes {
+		if m.set {
+			selected = append(selected, m.name)
+		}
+	}
+	if len(selected) > 1 {
+		return fmt.Errorf("conflicting options: %s — use one operation at a time", strings.Join(selected, ", "))
+	}
+
+	for _, ref := range []struct{ kind, val string }{
+		{"remote", *remoteName},
+		{"branch", *resetSoft},
+		{"branch", *resetHard},
+		{"branch", *rebaseBranch},
+		{"branch", *wtCreate},
+		{"pattern", *wtRemove},
+		{"branch", *wtOpen},
+		{"branch", *diverge},
+	} {
+		if ref.val != "" && strings.HasPrefix(ref.val, "-") {
+			return fmt.Errorf("invalid %s %q: must not start with '-'", ref.kind, ref.val)
+		}
+	}
 
 	root, _ := os.Getwd()
 	root = resolveRoot(root)
@@ -456,13 +503,10 @@ func Run(ctx context.Context, args []string) error {
 		return listAllBranches(ctx, root, *workers, cfg)
 	}
 
-	divergeSet := false
-	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "diverge" || f.Name == "dv" {
-			divergeSet = true
-		}
-	})
 	if divergeSet {
+		if fs.NArg() > 0 {
+			return fmt.Errorf("unexpected argument %q: -dv takes its branch inline, e.g. 'gb -dv main'", fs.Arg(0))
+		}
 		return checkDiverge(ctx, root, *diverge, *workers, cfg)
 	}
 

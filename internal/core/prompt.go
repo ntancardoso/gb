@@ -7,13 +7,16 @@ import (
 	"strings"
 )
 
-func PromptViewLogs() bool {
+func stdinIsCharDevice() bool {
 	fileInfo, err := os.Stdin.Stat()
 	if err != nil {
 		return false
 	}
+	return fileInfo.Mode()&os.ModeCharDevice != 0
+}
 
-	if (fileInfo.Mode() & os.ModeCharDevice) == 0 {
+func PromptViewLogs() bool {
+	if !stdinIsCharDevice() {
 		return false
 	}
 

@@ -29,13 +29,13 @@ func switchBranches(ctx context.Context, root, target string, workers int, cfg *
 	}
 
 	progress := NewProgressState(repos, "Switching branches", cfg.PageSize)
-	stop := progress.start()
+	progress.StartInput()
 
-	results := runPool(ctx, repos, workers, func(_ context.Context, r RepoInfo) SwitchResult {
+	results := runPool(ctx, repos, workers, func(ctx context.Context, r RepoInfo) SwitchResult {
 		progress.UpdateStatus(r.RelPath, statusProcessing, "")
 
 		logFile, _ := logManager.CreateLogFile(r.RelPath)
-		res := processSingleRepo(r, target, cfg.Remote, logFile)
+		res := processSingleRepo(ctx, r, target, cfg.Remote, logFile)
 		if logFile != nil {
 			_ = logFile.Close()
 		}
@@ -63,16 +63,13 @@ func switchBranches(ctx context.Context, root, target string, workers int, cfg *
 		}
 	}
 
-	stop()
-
-	fmt.Println("\n" + StyleBold.Render("--- Summary ---"))
-	fmt.Printf("Switched %s repos to %s, %s skipped (branch in worktree), %s failed\n",
+	summary := StyleBold.Render("--- Summary ---") + "\n" + fmt.Sprintf("Switched %s repos to %s, %s skipped (branch in worktree), %s failed",
 		StyleSuccess.Render(fmt.Sprintf("%d", ok)),
 		target,
 		StyleSkipped.Render(fmt.Sprintf("%d", skip)),
 		StyleFailed.Render(fmt.Sprintf("%d", fail)))
 
-	if PromptViewLogs() {
+	if progress.FinishAndPromptViewLogs(summary) {
 		DisplaySwitchLogs(logManager, results)
 	} else {
 		fmt.Printf("\nLogs are available at: %s\n", logManager.GetTempDir())
@@ -107,7 +104,7 @@ func isBranchLockedInWorktree(repoPath, targetBranch string) bool {
 	return false
 }
 
-func processSingleRepo(repo RepoInfo, targetBranch, remote string, logFile *os.File) SwitchResult {
+func processSingleRepo(ctx context.Context, repo RepoInfo, targetBranch, remote string, logFile *os.File) SwitchResult {
 	log := func(format string, args ...any) {
 		if logFile != nil {
 			_, _ = fmt.Fprintf(logFile, format+"\n", args...)
@@ -130,7 +127,7 @@ func processSingleRepo(repo RepoInfo, targetBranch, remote string, logFile *os.F
 
 	if !branchExists {
 		log("Checking remote for branch...")
-		remoteCheck := exec.Command("git", "ls-remote", "--exit-code", "--heads", remote, targetBranch)
+		remoteCheck := exec.CommandContext(ctx, "git", "-c", "protocol.ext.allow=never", "ls-remote", "--exit-code", "--heads", remote, targetBranch)
 		remoteCheck.Dir = repo.Path
 		if remoteCheck.Run() == nil {
 			checkCmd := exec.Command("git", "rev-parse", "--is-shallow-repository")
@@ -138,14 +135,14 @@ func processSingleRepo(repo RepoInfo, targetBranch, remote string, logFile *os.F
 			out, err := checkCmd.Output()
 			isShallow := err == nil && strings.TrimSpace(string(out)) == "true"
 
-			args := []string{"fetch", remote}
+			args := []string{"-c", "protocol.ext.allow=never", "fetch", remote}
 			if isShallow {
 				args = append(args, "--depth=1")
 			}
 			args = append(args, targetBranch)
 
 			log("Executing: git %s", strings.Join(args, " "))
-			fetchCmd := exec.Command("git", args...)
+			fetchCmd := exec.CommandContext(ctx, "git", args...)
 			fetchCmd.Dir = repo.Path
 			if logFile != nil {
 				fetchCmd.Stdout = logFile
@@ -163,7 +160,7 @@ func processSingleRepo(repo RepoInfo, targetBranch, remote string, logFile *os.F
 	}
 
 	log("Executing: git switch %s", targetBranch)
-	switchCmd := exec.Command("git", "switch", targetBranch)
+	switchCmd := exec.CommandContext(ctx, "git", "switch", targetBranch)
 	switchCmd.Dir = repo.Path
 	if logFile != nil {
 		switchCmd.Stdout = logFile
@@ -176,7 +173,7 @@ func processSingleRepo(repo RepoInfo, targetBranch, remote string, logFile *os.F
 
 	log("Switch failed, trying to create tracking branch...")
 	log("Executing: git switch -c %s --track %s/%s", targetBranch, remote, targetBranch)
-	trackCmd := exec.Command("git", "switch", "-c", targetBranch, "--track", remote+"/"+targetBranch)
+	trackCmd := exec.CommandContext(ctx, "git", "switch", "-c", targetBranch, "--track", remote+"/"+targetBranch)
 	trackCmd.Dir = repo.Path
 	if logFile != nil {
 		trackCmd.Stdout = logFile

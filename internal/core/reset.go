@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -40,7 +41,7 @@ func syncBranch(ctx context.Context, root, branch, posBranch, mode string, worke
 			return fmt.Errorf("stdin is not a terminal; destructive operations require interactive confirmation — use -rs for non-interactive use")
 		}
 
-		dirtyRepos := preflightScan(ctx, repos, workers)
+		dirtyRepos := preflightScan(ctx, repos, workers, plan, mode)
 		if !PromptConfirmDestructive(operationDescription(mode, displayRef), len(repos), dirtyRepos) {
 			fmt.Println("Aborted.")
 			return nil
@@ -57,14 +58,14 @@ func syncBranch(ctx context.Context, root, branch, posBranch, mode string, worke
 	}
 
 	progress := NewProgressState(repos, opDesc, cfg.PageSize)
-	stop := progress.start()
+	progress.StartInput()
 
-	results := runPool(ctx, repos, workers, func(_ context.Context, r RepoInfo) ResetResult {
+	results := runPool(ctx, repos, workers, func(ctx context.Context, r RepoInfo) ResetResult {
 		progress.UpdateStatus(r.RelPath, statusProcessing, "")
 
 		logFile, _ := logManager.CreateLogFile(r.RelPath)
 		target := finalizeResetTarget(plan, r.Path)
-		res := processSingleReset(r, target, mode, logFile)
+		res := processSingleReset(ctx, r, target, mode, logFile)
 		if logFile != nil {
 			_ = logFile.Close()
 		}
@@ -94,12 +95,11 @@ func syncBranch(ctx context.Context, root, branch, posBranch, mode string, worke
 		}
 	}
 
-	stop()
-
-	fmt.Println("\n" + StyleBold.Render("--- Summary ---"))
-	fmt.Printf("Ran '%s' across %d repos:\n", opDesc, len(repos))
-	fmt.Printf("  %s succeeded\n", StyleSuccess.Render(fmt.Sprintf("%d", succeeded)))
-	fmt.Printf("  %s failed\n", StyleFailed.Render(fmt.Sprintf("%d", failed)))
+	var sum strings.Builder
+	sum.WriteString(StyleBold.Render("--- Summary ---") + "\n")
+	fmt.Fprintf(&sum, "Ran '%s' across %d repos:\n", opDesc, len(repos))
+	fmt.Fprintf(&sum, "  %s succeeded\n", StyleSuccess.Render(fmt.Sprintf("%d", succeeded)))
+	fmt.Fprintf(&sum, "  %s failed", StyleFailed.Render(fmt.Sprintf("%d", failed)))
 	if skipped > 0 {
 		reasons := make([]string, 0, len(skipReasons))
 		for reason := range skipReasons {
@@ -110,10 +110,10 @@ func syncBranch(ctx context.Context, root, branch, posBranch, mode string, worke
 		for _, reason := range reasons {
 			parts = append(parts, fmt.Sprintf("%s: %d", reason, skipReasons[reason]))
 		}
-		fmt.Printf("  %s skipped (%s)\n", StyleSkipped.Render(fmt.Sprintf("%d", skipped)), strings.Join(parts, ", "))
+		fmt.Fprintf(&sum, "\n  %s skipped (%s)", StyleSkipped.Render(fmt.Sprintf("%d", skipped)), strings.Join(parts, ", "))
 	}
 
-	if PromptViewLogs() {
+	if progress.FinishAndPromptViewLogs(sum.String()) {
 		DisplayResetLogs(logManager, results)
 	} else {
 		fmt.Printf("\nLogs are available at: %s\n", logManager.GetTempDir())
@@ -138,9 +138,24 @@ func operationDescription(mode, ref string) string {
 	return "unknown operation"
 }
 
-func preflightScan(ctx context.Context, repos []RepoInfo, workers int) []repoPreflightInfo {
-	results := runPool(ctx, repos, workers, func(_ context.Context, r RepoInfo) repoPreflightInfo {
-		return repoPreflightInfo{RelPath: r.RelPath, Path: r.Path, DirtyStatus: getDirtyStatus(r.Path)}
+func preflightScan(ctx context.Context, repos []RepoInfo, workers int, plan resetPlan, mode string) []repoPreflightInfo {
+	results := runPool(ctx, repos, workers, func(ctx context.Context, r RepoInfo) repoPreflightInfo {
+		status, err := getDirtyStatus(ctx, r.Path)
+		if err != nil {
+			status = "status check failed"
+		}
+		if mode == "hard" {
+			target := finalizeResetTarget(plan, r.Path)
+			if n := countUnpushedCommits(ctx, r.Path, target.ref()); n > 0 {
+				unpushed := fmt.Sprintf("%d unpushed commit(s)", n)
+				if status == "" {
+					status = unpushed
+				} else {
+					status += ", " + unpushed
+				}
+			}
+		}
+		return repoPreflightInfo{RelPath: r.RelPath, Path: r.Path, DirtyStatus: status}
 	})
 
 	dirty := make([]repoPreflightInfo, 0, len(results))
@@ -153,16 +168,31 @@ func preflightScan(ctx context.Context, repos []RepoInfo, workers int) []repoPre
 	return dirty
 }
 
-func getDirtyStatus(dir string) string {
-	cmd := exec.Command("git", "status", "--porcelain")
+// countUnpushedCommits counts commits on HEAD that the reset target lacks, i.e.
+// what a hard reset would discard beyond working-tree changes. Best-effort: an
+// unresolvable target (missing branch, no remote-tracking ref yet) counts as 0;
+// the actual reset handles those cases itself.
+func countUnpushedCommits(ctx context.Context, dir, ref string) int {
+	cmd := exec.CommandContext(ctx, "git", "rev-list", "--count", ref+"..HEAD")
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {
-		return ""
+		return 0
+	}
+	n, _ := strconv.Atoi(strings.TrimSpace(string(out)))
+	return n
+}
+
+func getDirtyStatus(ctx context.Context, dir string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "-c", "core.fsmonitor=false", "status", "--porcelain")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
 	}
 	trimmed := strings.TrimSpace(string(out))
 	if trimmed == "" {
-		return ""
+		return "", nil
 	}
 
 	hasStaged, hasUnstaged := false, false
@@ -180,13 +210,13 @@ func getDirtyStatus(dir string) string {
 
 	switch {
 	case hasStaged && hasUnstaged:
-		return "staged + unstaged changes"
+		return "staged + unstaged changes", nil
 	case hasStaged:
-		return "staged changes"
+		return "staged changes", nil
 	case hasUnstaged:
-		return "unstaged changes"
+		return "unstaged changes", nil
 	}
-	return "changes"
+	return "changes", nil
 }
 
 // resetTarget is the resolved destination of a reset/rebase in a single repo.
@@ -274,7 +304,7 @@ func splitRemoteBranch(dir, arg string) (remote, branch string, ok bool) {
 	return "", "", false
 }
 
-func processSingleReset(repo RepoInfo, target resetTarget, mode string, logFile *os.File) ResetResult {
+func processSingleReset(ctx context.Context, repo RepoInfo, target resetTarget, mode string, logFile *os.File) ResetResult {
 	log := func(format string, args ...any) {
 		if logFile != nil {
 			_, _ = fmt.Fprintf(logFile, format+"\n", args...)
@@ -294,7 +324,7 @@ func processSingleReset(repo RepoInfo, target resetTarget, mode string, logFile 
 	}
 
 	if !target.isRemote {
-		effective, res, done := resolveLocalTarget(repo, target, log)
+		effective, res, done := resolveLocalTarget(ctx, repo, target, log)
 		if done {
 			return res
 		}
@@ -310,7 +340,7 @@ func processSingleReset(repo RepoInfo, target resetTarget, mode string, logFile 
 				return ResetResult{RelPath: repo.RelPath, Skipped: true, SkipReason: "no " + target.remote + " remote"}
 			}
 
-			found, netErr := checkBranchOnRemote(repo.Path, target.branch, target.remote)
+			found, netErr := checkBranchOnRemote(ctx, repo.Path, target.branch, target.remote)
 			if netErr != nil {
 				log("Error checking remote branch: %v", netErr)
 				return ResetResult{RelPath: repo.RelPath, Success: false, Error: fmt.Sprintf("network error: %v", netErr)}
@@ -322,7 +352,7 @@ func processSingleReset(repo RepoInfo, target resetTarget, mode string, logFile 
 		}
 
 		log("Fetching to update %s ref", target.ref())
-		if fetchErr := fetchBranchFromRemote(repo.Path, target.branch, target.remote, logFile); fetchErr != nil {
+		if fetchErr := fetchBranchFromRemote(ctx, repo.Path, target.branch, target.remote, logFile); fetchErr != nil {
 			log("Fetch failed: %v", fetchErr)
 			return ResetResult{RelPath: repo.RelPath, Success: false, Error: "fetch failed"}
 		}
@@ -335,11 +365,11 @@ func processSingleReset(repo RepoInfo, target resetTarget, mode string, logFile 
 
 	switch mode {
 	case "hard":
-		return doHardReset(repo, target, logFile, log)
+		return doHardReset(ctx, repo, target, logFile, log)
 	case "soft":
-		return doSoftReset(repo, target, logFile, log)
+		return doSoftReset(ctx, repo, target, logFile, log)
 	case "rebase":
-		return doRebase(repo, target, logFile, log)
+		return doRebase(ctx, repo, target, logFile, log)
 	}
 	return ResetResult{RelPath: repo.RelPath, Success: false, Error: "unknown mode"}
 }
@@ -348,14 +378,14 @@ func processSingleReset(repo RepoInfo, target resetTarget, mode string, logFile 
 // local branch exists it stays local; otherwise it falls back to the default
 // remote when the branch is present there. Returns done=true with a skip result
 // when the branch exists neither locally nor on the remote.
-func resolveLocalTarget(repo RepoInfo, target resetTarget, log func(string, ...any)) (resetTarget, ResetResult, bool) {
+func resolveLocalTarget(ctx context.Context, repo RepoInfo, target resetTarget, log func(string, ...any)) (resetTarget, ResetResult, bool) {
 	if checkLocalBranchExists(repo.Path, target.branch) {
 		return target, ResetResult{}, false
 	}
 
 	remote := target.fallbackRemote
 	if remote != "" && checkRemoteExists(repo.Path, remote) {
-		found, netErr := checkBranchOnRemote(repo.Path, target.branch, remote)
+		found, netErr := checkBranchOnRemote(ctx, repo.Path, target.branch, remote)
 		if netErr != nil {
 			log("Error checking remote branch: %v", netErr)
 			return target, ResetResult{RelPath: repo.RelPath, Success: false, Error: fmt.Sprintf("network error: %v", netErr)}, true
@@ -376,14 +406,14 @@ func checkLocalBranchExists(dir, branch string) bool {
 	return cmd.Run() == nil
 }
 
-func doHardReset(repo RepoInfo, target resetTarget, logFile *os.File, log func(string, ...any)) ResetResult {
+func doHardReset(ctx context.Context, repo RepoInfo, target resetTarget, logFile *os.File, log func(string, ...any)) ResetResult {
 	if inProgress, opName := checkMidOperation(repo.Path); inProgress {
 		log("Skipping: mid-%s operation in progress", opName)
 		return ResetResult{RelPath: repo.RelPath, Skipped: true, SkipReason: fmt.Sprintf("mid-%s in progress", opName)}
 	}
 
 	log("Executing: git reset --hard %s", target.ref())
-	cmd := exec.Command("git", "reset", "--hard", target.ref())
+	cmd := exec.CommandContext(ctx, "git", "reset", "--hard", target.ref())
 	cmd.Dir = repo.Path
 	if logFile != nil {
 		cmd.Stdout = logFile
@@ -397,7 +427,7 @@ func doHardReset(repo RepoInfo, target resetTarget, logFile *os.File, log func(s
 	return ResetResult{RelPath: repo.RelPath, Success: true}
 }
 
-func doSoftReset(repo RepoInfo, target resetTarget, logFile *os.File, log func(string, ...any)) ResetResult {
+func doSoftReset(ctx context.Context, repo RepoInfo, target resetTarget, logFile *os.File, log func(string, ...any)) ResetResult {
 	warning := ""
 	stagedCheck := exec.Command("git", "diff", "--cached", "--quiet")
 	stagedCheck.Dir = repo.Path
@@ -407,7 +437,7 @@ func doSoftReset(repo RepoInfo, target resetTarget, logFile *os.File, log func(s
 	}
 
 	log("Executing: git reset --soft %s", target.ref())
-	cmd := exec.Command("git", "reset", "--soft", target.ref())
+	cmd := exec.CommandContext(ctx, "git", "reset", "--soft", target.ref())
 	cmd.Dir = repo.Path
 	if logFile != nil {
 		cmd.Stdout = logFile
@@ -421,19 +451,24 @@ func doSoftReset(repo RepoInfo, target resetTarget, logFile *os.File, log func(s
 	return ResetResult{RelPath: repo.RelPath, Success: true, Warning: warning}
 }
 
-func doRebase(repo RepoInfo, target resetTarget, logFile *os.File, log func(string, ...any)) ResetResult {
+func doRebase(ctx context.Context, repo RepoInfo, target resetTarget, logFile *os.File, log func(string, ...any)) ResetResult {
 	if checkRebaseInProgress(repo.Path) {
 		log("Skipping: rebase already in progress")
 		return ResetResult{RelPath: repo.RelPath, Skipped: true, SkipReason: "rebase already in progress"}
 	}
 
-	if status := getDirtyStatus(repo.Path); status != "" {
+	status, statusErr := getDirtyStatus(ctx, repo.Path)
+	if statusErr != nil {
+		log("Failed: could not check working tree status: %v", statusErr)
+		return ResetResult{RelPath: repo.RelPath, Success: false, Error: "status check failed"}
+	}
+	if status != "" {
 		log("Failed: working tree must be clean for rebase (%s)", status)
 		return ResetResult{RelPath: repo.RelPath, Success: false, Error: "working tree must be clean"}
 	}
 
 	log("Executing: git rebase %s", target.ref())
-	cmd := exec.Command("git", "rebase", target.ref())
+	cmd := exec.CommandContext(ctx, "git", "rebase", target.ref())
 	cmd.Dir = repo.Path
 	if logFile != nil {
 		cmd.Stdout = logFile
@@ -480,8 +515,8 @@ func checkDetachedHEAD(dir string) bool {
 	return strings.TrimSpace(string(out)) == ""
 }
 
-func checkBranchOnRemote(dir, branch, remote string) (bool, error) {
-	cmd := exec.Command("git", "ls-remote", "--exit-code", "--heads", remote, branch)
+func checkBranchOnRemote(ctx context.Context, dir, branch, remote string) (bool, error) {
+	cmd := exec.CommandContext(ctx, "git", "-c", "protocol.ext.allow=never", "ls-remote", "--exit-code", "--heads", remote, branch)
 	cmd.Dir = dir
 	err := cmd.Run()
 	if err == nil {
@@ -550,19 +585,19 @@ func checkAlreadyAtTarget(dir, ref string) bool {
 	return strings.TrimSpace(string(headOut)) == strings.TrimSpace(string(targetOut))
 }
 
-func fetchBranchFromRemote(dir, branch, remote string, logFile *os.File) error {
+func fetchBranchFromRemote(ctx context.Context, dir, branch, remote string, logFile *os.File) error {
 	checkCmd := exec.Command("git", "rev-parse", "--is-shallow-repository")
 	checkCmd.Dir = dir
 	shallowOut, shallowErr := checkCmd.Output()
 	isShallow := shallowErr == nil && strings.TrimSpace(string(shallowOut)) == "true"
 
-	args := []string{"fetch", remote}
+	args := []string{"-c", "protocol.ext.allow=never", "fetch", remote}
 	if isShallow {
 		args = append(args, "--depth=1")
 	}
 	args = append(args, branch)
 
-	fetchCmd := exec.Command("git", args...)
+	fetchCmd := exec.CommandContext(ctx, "git", args...)
 	fetchCmd.Dir = dir
 	if logFile != nil {
 		fetchCmd.Stdout = logFile

@@ -160,11 +160,11 @@ func TestProcessSingleRepo(t *testing.T) {
 	createGitRepo(t, tmpDir)
 
 	repo := RepoInfo{Path: tmpDir, RelPath: "test"}
-	result := processSingleRepo(repo, "main", "origin", nil)
+	result := processSingleRepo(context.Background(), repo, "main", "origin", nil)
 	if result.Success {
 		branch, _ := getBranch(tmpDir)
 		if branch != "main" && branch != "master" {
-			result = processSingleRepo(repo, "master", "origin", nil)
+			result = processSingleRepo(context.Background(), repo, "master", "origin", nil)
 		}
 	}
 
@@ -172,7 +172,7 @@ func TestProcessSingleRepo(t *testing.T) {
 		t.Errorf("expected success, got error: %s", result.Error)
 	}
 
-	result = processSingleRepo(repo, "nonexistent", "origin", nil)
+	result = processSingleRepo(context.Background(), repo, "nonexistent", "origin", nil)
 	if result.Success {
 		t.Error("expected failure for non-existent branch")
 	}
@@ -785,7 +785,7 @@ func TestProcessSingleRepoSkipsLockedBranch(t *testing.T) {
 	runCmd(t, mainRepo, "git", "worktree", "add", wtPath, "locked-branch")
 
 	repo := RepoInfo{Path: mainRepo, RelPath: "repo"}
-	result := processSingleRepo(repo, "locked-branch", "origin", nil)
+	result := processSingleRepo(context.Background(), repo, "locked-branch", "origin", nil)
 
 	if !result.Skipped {
 		t.Error("expected result to be skipped when branch is locked in worktree")

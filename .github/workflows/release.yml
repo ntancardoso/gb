@@ -31,15 +31,19 @@ jobs:
 
       - name: Create and push tag if manual trigger
         if: github.event_name == 'workflow_dispatch'
+        env:
+          TAG: ${{ github.event.inputs.tag }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a ${{ github.event.inputs.tag }} -m "Release ${{ github.event.inputs.tag }}"
-          git push origin ${{ github.event.inputs.tag }}
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
 
       - name: Checkout tag for goreleaser
         if: github.event_name == 'workflow_dispatch'
-        run: git checkout ${{ github.event.inputs.tag }}
+        env:
+          TAG: ${{ github.event.inputs.tag }}
+        run: git checkout "$TAG"
 
       - name: Set up Go
         uses: actions/setup-go@v5

@@ -91,8 +91,7 @@ function Confirm-Checksum {
   $lines = Get-Content $ChecksumsFile
   $entry = $lines | Where-Object { $_ -match "\s$([regex]::Escape($name))$" } | Select-Object -First 1
   if (-not $entry) {
-    Write-Warn "No checksum entry for $name, skipping verification"
-    return
+    Write-Fatal "No checksum entry for $name in checksums.txt - refusing to install unverified binary"
   }
   $expected = ($entry -split '\s+')[0]
   $actual   = Get-FileHash256 $Archive

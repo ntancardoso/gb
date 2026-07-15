@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.2.7 — 2026-07-15
+
+### Added
+- Page navigation (↑/↓/PgUp/PgDn) stays live while the "View detailed logs? (y/N)" prompt is shown; y/n/Enter/Esc answer the prompt. Falls back to the plain prompt on non-TTY output or piped stdin.
+- The hard-reset confirmation prompt now also warns about repos with unpushed commits (HEAD ahead of the target) and repos whose status check failed, not just dirty working trees.
+- Stale `gb-logs-*` temp directories older than 7 days are purged on startup; the current run's logs are kept.
+
+### Fixed
+- `gb -dv` and `gb -tr` now exit non-zero when any repo fails, matching every other operation.
+- Conflicting operation flags (e.g. `-rs` with `-rh`, `-c` with `-l`) are rejected instead of silently running only one.
+- `gb -dv` with a stray positional argument errors instead of silently ignoring it.
+- `-tr`/`--track` no longer consumes a following positional argument during flag reordering.
+- Ctrl+C now cancels in-flight git processes in switch/reset/rebase/diverge/track (previously they ran to completion).
+- Worktree removal no longer attempts to delete the workspace parent directories.
+- `.env` copied into a new worktree keeps the source file's permissions.
+- Installer scripts fail hard when the release checksum entry or sha256 tool is missing instead of skipping verification.
+
+### Security
+- Branch/ref/remote/pattern arguments starting with `-` are rejected, preventing option injection into git (e.g. `-rb=--exec=<cmd>`).
+- `fetch`/`ls-remote` run with `protocol.ext.allow=never`; `git status` preflight runs with `core.fsmonitor=false`, so a scanned repo's config can't execute commands through those paths.
+- Release workflow no longer interpolates the dispatch tag input directly into shell commands; CI workflow runs with read-only permissions.
+
 ## v0.2.6 — 2026-06-09
 
 ### Fixed

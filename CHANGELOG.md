@@ -4,7 +4,7 @@
 
 ### Added
 - Page navigation (↑/↓/PgUp/PgDn) stays live while the "View detailed logs? (y/N)" prompt is shown; y/n/Enter/Esc answer the prompt. Falls back to the plain prompt on non-TTY output or piped stdin.
-- The hard-reset confirmation prompt now also warns about repos with unpushed commits (HEAD ahead of the target) and repos whose status check failed, not just dirty working trees.
+- The hard-reset confirmation prompt now also warns about repos whose HEAD is ahead of the reset target (those commits would be discarded) and repos whose status check failed, not just dirty working trees.
 - Stale `gb-logs-*` temp directories older than 7 days are purged on startup; the current run's logs are kept.
 
 ### Fixed
@@ -12,7 +12,7 @@
 - Conflicting operation flags (e.g. `-rs` with `-rh`, `-c` with `-l`) are rejected instead of silently running only one.
 - `gb -dv` with a stray positional argument errors instead of silently ignoring it.
 - `-tr`/`--track` no longer consumes a following positional argument during flag reordering.
-- Ctrl+C now cancels in-flight git processes in switch/reset/rebase/diverge/track (previously they ran to completion).
+- In-flight git subprocesses now honor context cancellation (`exec.CommandContext`) in switch/reset/rebase/diverge/track, so a parent-driven cancel or SIGINT in non-interactive runs stops them promptly. While the interactive progress UI is active, Ctrl+C stops the display but the current git command still completes.
 - Worktree removal no longer attempts to delete the workspace parent directories.
 - `.env` copied into a new worktree keeps the source file's permissions.
 - Installer scripts fail hard when the release checksum entry or sha256 tool is missing instead of skipping verification.

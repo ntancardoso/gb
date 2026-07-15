@@ -29,7 +29,7 @@ curl -fsSL https://raw.githubusercontent.com/ntancardoso/gb/main/install.sh | sh
 curl -fsSL https://raw.githubusercontent.com/ntancardoso/gb/main/install.sh | sh -s -- --pre-release
 
 # Specific version
-curl -fsSL https://raw.githubusercontent.com/ntancardoso/gb/main/install.sh | sh -s -- --version v0.2.3
+curl -fsSL https://raw.githubusercontent.com/ntancardoso/gb/main/install.sh | sh -s -- --version v0.2.7
 ```
 
 ### Windows (PowerShell)
@@ -42,7 +42,7 @@ irm https://raw.githubusercontent.com/ntancardoso/gb/main/install.ps1 | iex
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/ntancardoso/gb/main/install.ps1))) -PreRelease
 
 # Specific version
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/ntancardoso/gb/main/install.ps1))) -Version v0.2.3
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/ntancardoso/gb/main/install.ps1))) -Version v0.2.7
 ```
 
 Installs to `%LOCALAPPDATA%\Programs\gb` and adds it to your user PATH automatically.
@@ -432,7 +432,7 @@ gb -c "status"
 - **Sync: rebase conflict**: `git rebase --abort` is run automatically; repo is reported as failed with clean state restored
 - **Sync: non-interactive terminal**: `-rh` and `-rb` exit with an error if stdin is not a TTY; use `-rs` for CI pipelines
 - **Sync: mid-operation repo**: Repos in the middle of a merge, cherry-pick, or revert are skipped by hard reset to avoid silent data loss
-- **Sync: unpushed commits**: The hard-reset confirmation prompt also lists repos whose HEAD is ahead of the target, since those commits would be discarded
+- **Sync: commits ahead of target**: The hard-reset confirmation prompt also lists repos whose HEAD is ahead of the reset target, since those commits would be discarded
 - **Exit codes**: All operations (including `-dv` and `-tr`) exit non-zero when any repo fails
 
 ## Behavior Notes
@@ -445,7 +445,7 @@ gb -c "status"
 
 ## Requirements
 
-- **Git**: Must be installed and accessible in PATH
+- **Git 2.24+**: Must be installed and accessible in PATH (divergence checks use `--end-of-options`)
 - **Go 1.26+**: For building from source
 - **File System**: Read access to repository directories
 

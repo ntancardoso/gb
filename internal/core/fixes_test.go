@@ -43,6 +43,24 @@ func TestRunDivergeRejectsLeftoverPositional(t *testing.T) {
 	}
 }
 
+func TestRunRejectsLeadingDashPositional(t *testing.T) {
+	// `--` terminates flag parsing, so a dashed positional would otherwise reach
+	// git as an option (e.g. `git switch --detach`).
+	err := Run(context.Background(), []string{"--", "--detach"})
+	if err == nil || !strings.Contains(err.Error(), "must not start with '-'") {
+		t.Fatalf("expected leading-dash rejection for positional, got: %v", err)
+	}
+}
+
+func TestRunRejectsStrayPositionalForBoolModes(t *testing.T) {
+	for _, flag := range []string{"-l", "-tr", "-wl"} {
+		err := Run(context.Background(), []string{flag, "main"})
+		if err == nil || !strings.Contains(err.Error(), "unexpected argument") {
+			t.Errorf("%s: expected unexpected-argument error, got: %v", flag, err)
+		}
+	}
+}
+
 func TestReorderArgsTrackIsBool(t *testing.T) {
 	got := reorderArgs([]string{"-tr", "somebranch"})
 	want := []string{"-tr", "somebranch"}
@@ -57,12 +75,12 @@ func TestPreflightScanUnpushedCommits(t *testing.T) {
 	plan := classifyReset("origin/main", "", "origin", false)
 
 	dirty := preflightScan(context.Background(), []RepoInfo{repo}, 1, plan, "hard")
-	if len(dirty) != 1 || !strings.Contains(dirty[0].DirtyStatus, "1 unpushed commit(s)") {
-		t.Fatalf("expected unpushed-commit warning, got: %+v", dirty)
+	if len(dirty) != 1 || !strings.Contains(dirty[0].DirtyStatus, "1 commit(s) ahead of target") {
+		t.Fatalf("expected commits-ahead warning, got: %+v", dirty)
 	}
 
 	if dirty := preflightScan(context.Background(), []RepoInfo{repo}, 1, plan, "rebase"); len(dirty) != 0 {
-		t.Fatalf("rebase preflight must not warn about unpushed commits, got: %+v", dirty)
+		t.Fatalf("rebase preflight must not warn about commits ahead of target, got: %+v", dirty)
 	}
 }
 

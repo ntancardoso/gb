@@ -488,6 +488,10 @@ func Run(ctx context.Context, args []string) error {
 		}
 	}
 
+	if fs.NArg() >= 1 && strings.HasPrefix(fs.Arg(0), "-") {
+		return fmt.Errorf("invalid argument %q: must not start with '-'", fs.Arg(0))
+	}
+
 	root, _ := os.Getwd()
 	root = resolveRoot(root)
 
@@ -500,6 +504,9 @@ func Run(ctx context.Context, args []string) error {
 	}
 
 	if *listBranches {
+		if fs.NArg() > 0 {
+			return fmt.Errorf("unexpected argument %q: -l takes no branch argument", fs.Arg(0))
+		}
 		return listAllBranches(ctx, root, *workers, cfg)
 	}
 
@@ -511,6 +518,9 @@ func Run(ctx context.Context, args []string) error {
 	}
 
 	if *trackUpstream {
+		if fs.NArg() > 0 {
+			return fmt.Errorf("unexpected argument %q: -tr takes no branch argument", fs.Arg(0))
+		}
 		return checkTrack(ctx, root, *workers, cfg)
 	}
 
@@ -538,6 +548,9 @@ func Run(ctx context.Context, args []string) error {
 	}
 
 	if *wtList {
+		if fs.NArg() > 0 {
+			return fmt.Errorf("unexpected argument %q: -wl takes no branch argument", fs.Arg(0))
+		}
 		return worktreeListAll(ctx, root, *workers, cfg)
 	}
 

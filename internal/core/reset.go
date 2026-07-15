@@ -146,12 +146,12 @@ func preflightScan(ctx context.Context, repos []RepoInfo, workers int, plan rese
 		}
 		if mode == "hard" {
 			target := finalizeResetTarget(plan, r.Path)
-			if n := countUnpushedCommits(ctx, r.Path, target.ref()); n > 0 {
-				unpushed := fmt.Sprintf("%d unpushed commit(s)", n)
+			if n := countCommitsAheadOfTarget(ctx, r.Path, target.ref()); n > 0 {
+				ahead := fmt.Sprintf("%d commit(s) ahead of target", n)
 				if status == "" {
-					status = unpushed
+					status = ahead
 				} else {
-					status += ", " + unpushed
+					status += ", " + ahead
 				}
 			}
 		}
@@ -168,11 +168,12 @@ func preflightScan(ctx context.Context, repos []RepoInfo, workers int, plan rese
 	return dirty
 }
 
-// countUnpushedCommits counts commits on HEAD that the reset target lacks, i.e.
-// what a hard reset would discard beyond working-tree changes. Best-effort: an
-// unresolvable target (missing branch, no remote-tracking ref yet) counts as 0;
-// the actual reset handles those cases itself.
-func countUnpushedCommits(ctx context.Context, dir, ref string) int {
+// countCommitsAheadOfTarget counts commits on HEAD that the reset target lacks,
+// i.e. what a hard reset would discard beyond working-tree changes. These may or
+// may not be pushed elsewhere; the point is they leave this branch's HEAD.
+// Best-effort: an unresolvable target (missing branch, no remote-tracking ref
+// yet) counts as 0; the actual reset handles those cases itself.
+func countCommitsAheadOfTarget(ctx context.Context, dir, ref string) int {
 	cmd := exec.CommandContext(ctx, "git", "rev-list", "--count", ref+"..HEAD")
 	cmd.Dir = dir
 	out, err := cmd.Output()

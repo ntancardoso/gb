@@ -334,16 +334,6 @@ func (ps *ProgressState) StartInput() {
 	})
 }
 
-func (ps *ProgressState) StopInput() {
-	ps.stopOnce.Do(func() {
-		ps.stopped.Store(true)
-		if ps.program != nil {
-			ps.program.Send(doneMsg{})
-		}
-		ps.wg.Wait()
-	})
-}
-
 func (ps *ProgressState) UpdateStatus(relPath, status, errorMsg string) {
 	if ps.stopped.Load() {
 		return
@@ -358,7 +348,7 @@ func (ps *ProgressState) UpdateStatus(relPath, status, errorMsg string) {
 // FinishAndPromptViewLogs stops progress, shows the summary, and asks whether
 // to view detailed logs. In TUI mode the prompt runs inside the still-running
 // bubbletea program so the paging keys stay live; otherwise it falls back to a
-// plain summary print plus PromptViewLogs. Shares stopOnce with StopInput.
+// plain summary print plus PromptViewLogs. Runs once, guarded by stopOnce.
 func (ps *ProgressState) FinishAndPromptViewLogs(summary string) bool {
 	viewLogs, ran := false, false
 	ps.stopOnce.Do(func() {

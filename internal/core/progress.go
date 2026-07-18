@@ -199,8 +199,6 @@ func (m model) View() string {
 			prompt += ": y"
 		case m.answered:
 			prompt += ": n"
-		case m.totalPages() > 1:
-			prompt += "  " + StyleDim.Render("↑↓ PgUp/PgDn to page")
 		}
 		sb.WriteString(prompt + "\n")
 	}

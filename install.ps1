@@ -221,7 +221,12 @@ function Main {
     }
 
     Write-Host ""
-    & (Join-Path $installDir $Binary) --version
+    try {
+      & (Join-Path $installDir $Binary) --version
+    } catch {
+      Write-Warn "Installed, but running the binary failed (antivirus may be blocking or still scanning it)."
+      Write-Warn "Verify with 'gb --version' in a new terminal, or whitelist $installDir in your antivirus."
+    }
 
   } finally {
     Remove-Item $tmpDir -Recurse -Force -ErrorAction SilentlyContinue

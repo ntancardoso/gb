@@ -145,14 +145,14 @@ func TestModelViewPrompting(t *testing.T) {
 		t.Fatalf("expected summary and prompt in view, got:\n%s", view)
 	}
 	if strings.Contains(view, "to page") {
-		t.Fatal("single page must not show the paging hint")
+		t.Fatal("prompt must not show the paging hint")
 	}
 
 	multi := newModel(makeTestRepos(25), "op", 10)
 	updated, _ = multi.Update(promptMsg{summary: "S"})
 	multi = updated.(model)
-	if !strings.Contains(multi.View(), "to page") {
-		t.Fatal("multi-page prompt must show the paging hint")
+	if strings.Contains(multi.View(), "to page") {
+		t.Fatal("multi-page prompt must not show the paging hint")
 	}
 
 	updated, _ = m.Update(keyMsg("y"))

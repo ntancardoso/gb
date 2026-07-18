@@ -47,6 +47,8 @@ irm https://raw.githubusercontent.com/ntancardoso/gb/main/install.ps1 | iex
 
 Installs to `%LOCALAPPDATA%\Programs\gb` and adds it to your user PATH automatically.
 
+> Some antivirus products (e.g. Avast) hold or block freshly downloaded unsigned binaries. The install still succeeds; whitelist the install directory or retry `gb --version` after the scan completes.
+
 ### Uninstall
 
 **Linux / macOS:**
@@ -454,15 +456,6 @@ gb -c "status"
 - **Windows**: Full support including WSL symlinks and NTFS junctions
 - **Linux**: Native support with symlink resolution
 - **macOS**: Native support with symlink resolution
-
-## Contributing
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature-branch`)
-3. Run tests: `go test ./...`
-4. Commit your changes
-5. Push to the branch
-6. Create a Pull Request
 
 ## License
 

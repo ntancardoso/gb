@@ -129,8 +129,7 @@ verify_checksum() {
 
   expected="$(grep " ${archive_name}$" "$checksums_file" | awk '{print $1}')"
   if [ -z "$expected" ]; then
-    warn "No checksum entry for ${archive_name}, skipping verification"
-    return
+    fatal "No checksum entry for ${archive_name} in checksums.txt — refusing to install unverified binary"
   fi
 
   if command -v sha256sum >/dev/null 2>&1; then
@@ -138,8 +137,7 @@ verify_checksum() {
   elif command -v shasum >/dev/null 2>&1; then
     actual="$(shasum -a 256 "$archive" | awk '{print $1}')"
   else
-    warn "sha256sum/shasum not found, skipping checksum verification"
-    return
+    fatal "sha256sum/shasum not found — cannot verify download, refusing to install"
   fi
 
   if [ "$actual" != "$expected" ]; then

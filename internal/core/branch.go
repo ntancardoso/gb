@@ -250,7 +250,7 @@ func executeCommandInRepos(ctx context.Context, root, command string, workers in
 	}
 
 	progress := NewProgressState(repos, fmt.Sprintf("Executing 'git %s'", command), cfg.PageSize)
-	stop := progress.start()
+	progress.StartInput()
 
 	results := runPool(ctx, repos, workers, func(ctx context.Context, r RepoInfo) CommandResult {
 		progress.UpdateStatus(r.RelPath, statusProcessing, "")
@@ -278,15 +278,12 @@ func executeCommandInRepos(ctx context.Context, root, command string, workers in
 		}
 	}
 
-	stop()
-
-	fmt.Println("\n" + StyleBold.Render("--- Summary ---"))
-	fmt.Printf("Executed 'git %s' in %d repos: %s succeeded, %s failed\n",
+	summary := StyleBold.Render("--- Summary ---") + "\n" + fmt.Sprintf("Executed 'git %s' in %d repos: %s succeeded, %s failed",
 		command, success+failed,
 		StyleSuccess.Render(fmt.Sprintf("%d", success)),
 		StyleFailed.Render(fmt.Sprintf("%d", failed)))
 
-	if PromptViewLogs() {
+	if progress.FinishAndPromptViewLogs(summary) {
 		DisplayLogs(logManager, results)
 	} else {
 		fmt.Printf("\nLogs are available at: %s\n", logManager.GetTempDir())
@@ -318,7 +315,7 @@ func executeShellInRepos(ctx context.Context, root, command string, workers int,
 	}
 
 	progress := NewProgressState(repos, fmt.Sprintf("Executing '%s'", command), cfg.PageSize)
-	stop := progress.start()
+	progress.StartInput()
 
 	results := runPool(ctx, repos, workers, func(ctx context.Context, r RepoInfo) CommandResult {
 		progress.UpdateStatus(r.RelPath, statusProcessing, "")
@@ -355,15 +352,12 @@ func executeShellInRepos(ctx context.Context, root, command string, workers int,
 		}
 	}
 
-	stop()
-
-	fmt.Println("\n" + StyleBold.Render("--- Summary ---"))
-	fmt.Printf("Executed '%s' in %d repos: %s succeeded, %s failed\n",
+	summary := StyleBold.Render("--- Summary ---") + "\n" + fmt.Sprintf("Executed '%s' in %d repos: %s succeeded, %s failed",
 		command, success+failed,
 		StyleSuccess.Render(fmt.Sprintf("%d", success)),
 		StyleFailed.Render(fmt.Sprintf("%d", failed)))
 
-	if PromptViewLogs() {
+	if progress.FinishAndPromptViewLogs(summary) {
 		DisplayLogs(logManager, results)
 	} else {
 		fmt.Printf("\nLogs are available at: %s\n", logManager.GetTempDir())

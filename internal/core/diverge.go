@@ -45,7 +45,7 @@ func getTrackingRef(dir string) (string, error) {
 	return ref, nil
 }
 
-func processSingleDiverge(repo RepoInfo, ref, defaultRemote string) DivergeResult {
+func processSingleDiverge(ctx context.Context, repo RepoInfo, ref, defaultRemote string) DivergeResult {
 	if !checkHasCommits(repo.Path) {
 		return DivergeResult{RelPath: repo.RelPath, Skipped: true, SkipReason: "no commits"}
 	}
@@ -67,13 +67,13 @@ func processSingleDiverge(repo RepoInfo, ref, defaultRemote string) DivergeResul
 		remoteRef = remote + "/" + resolvedBranch
 	}
 
-	verifyCmd := exec.Command("git", "rev-parse", "--verify", remoteRef)
+	verifyCmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", "--end-of-options", remoteRef)
 	verifyCmd.Dir = repo.Path
 	if verifyCmd.Run() != nil {
 		return DivergeResult{RelPath: repo.RelPath, Branch: branch, UpstreamRef: remoteRef, Skipped: true, SkipReason: "remote ref not found"}
 	}
 
-	cmd := exec.Command("git", "rev-list", "--left-right", "--count", "HEAD..."+remoteRef)
+	cmd := exec.CommandContext(ctx, "git", "rev-list", "--left-right", "--count", "HEAD..."+remoteRef)
 	cmd.Dir = repo.Path
 	out, err := cmd.Output()
 	if err != nil {
@@ -116,8 +116,8 @@ func checkDiverge(ctx context.Context, root, ref string, workers int, cfg *Confi
 		"Found %d repos (filtered from %d discovered), checking divergence vs %s with %d workers...",
 		len(repos), total, displayRef, min(workers, len(repos)))))
 
-	results := runPool(ctx, repos, workers, func(_ context.Context, r RepoInfo) DivergeResult {
-		return processSingleDiverge(r, ref, cfg.Remote)
+	results := runPool(ctx, repos, workers, func(ctx context.Context, r RepoInfo) DivergeResult {
+		return processSingleDiverge(ctx, r, ref, cfg.Remote)
 	})
 
 	sort.Slice(results, func(i, j int) bool { return results[i].RelPath < results[j].RelPath })
@@ -195,6 +195,9 @@ func checkDiverge(ctx context.Context, root, ref string, workers int, cfg *Confi
 		fmt.Printf("  %s skipped (%s)\n", StyleSkipped.Render(fmt.Sprintf("%d", skipped)), strings.Join(reasonParts, ", "))
 	}
 
+	if failed > 0 {
+		return errReposFailed
+	}
 	return nil
 }
 

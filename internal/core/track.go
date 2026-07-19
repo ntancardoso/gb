@@ -15,13 +15,13 @@ type TrackResult struct {
 	Error    string
 }
 
-func processSingleTrack(repo RepoInfo) TrackResult {
+func processSingleTrack(ctx context.Context, repo RepoInfo) TrackResult {
 	branch, err := getBranch(repo.Path)
 	if err != nil {
 		return TrackResult{RelPath: repo.RelPath, Error: "failed to get branch: " + err.Error()}
 	}
 
-	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
 	cmd.Dir = repo.Path
 	out, err := cmd.Output()
 	if err != nil {
@@ -46,8 +46,8 @@ func checkTrack(ctx context.Context, root string, workers int, cfg *Config) erro
 		"Found %d repos (filtered from %d discovered), checking upstream tracking with %d workers...",
 		len(repos), total, min(workers, len(repos)))))
 
-	results := runPool(ctx, repos, workers, func(_ context.Context, r RepoInfo) TrackResult {
-		return processSingleTrack(r)
+	results := runPool(ctx, repos, workers, func(ctx context.Context, r RepoInfo) TrackResult {
+		return processSingleTrack(ctx, r)
 	})
 
 	sort.Slice(results, func(i, j int) bool { return results[i].RelPath < results[j].RelPath })
@@ -62,13 +62,14 @@ func checkTrack(ctx context.Context, root string, workers int, cfg *Config) erro
 		}
 	}
 
-	tracking, untracked := 0, 0
+	tracking, untracked, failed := 0, 0, 0
 	for _, r := range results {
 		pathCol := fmt.Sprintf("%-*s", maxPath, r.RelPath)
 		branchCol := fmt.Sprintf("%-*s", maxBranch, r.Branch)
 
 		if r.Error != "" {
 			fmt.Printf("%s  %s  → %s\n", pathCol, branchCol, StyleFailed.Render(r.Error))
+			failed++
 			continue
 		}
 
@@ -87,5 +88,9 @@ func checkTrack(ctx context.Context, root string, workers int, cfg *Config) erro
 		StyleSuccess.Render(fmt.Sprintf("%d", tracking)),
 		StyleSkipped.Render(fmt.Sprintf("%d", untracked)))
 
+	if failed > 0 {
+		fmt.Printf("  %s failed\n", StyleFailed.Render(fmt.Sprintf("%d", failed)))
+		return errReposFailed
+	}
 	return nil
 }

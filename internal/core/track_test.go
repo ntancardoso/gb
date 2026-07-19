@@ -1,6 +1,9 @@
 package core
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestProcessSingleTrackWithUpstream(t *testing.T) {
 	remoteDir := t.TempDir()
@@ -12,7 +15,7 @@ func TestProcessSingleTrackWithUpstream(t *testing.T) {
 	runCmd(t, repoDir, "git", "push", "-u", "origin", "main")
 
 	repo := RepoInfo{Path: repoDir, RelPath: "repo"}
-	res := processSingleTrack(repo)
+	res := processSingleTrack(context.Background(), repo)
 
 	if res.Error != "" {
 		t.Fatalf("expected no error, got: %s", res.Error)
@@ -30,7 +33,7 @@ func TestProcessSingleTrackNoUpstream(t *testing.T) {
 	createGitRepo(t, repoDir)
 
 	repo := RepoInfo{Path: repoDir, RelPath: "repo"}
-	res := processSingleTrack(repo)
+	res := processSingleTrack(context.Background(), repo)
 
 	if res.Error != "" {
 		t.Fatalf("expected no error, got: %s", res.Error)

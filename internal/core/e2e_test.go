@@ -42,7 +42,7 @@ func TestE2EHardResetFromDifferentBranchNotSkipped(t *testing.T) {
 	repoDir, _ := makeRepoOnFeatureBranchWithStaleOriginMain(t)
 
 	repo := RepoInfo{Path: repoDir, RelPath: "repo"}
-	res := processSingleReset(repo, remoteTarget("origin", "main"), "hard", nil)
+	res := processSingleReset(context.Background(), repo, remoteTarget("origin", "main"), "hard", nil)
 
 	if res.Skipped {
 		t.Fatalf("expected operation to run, but it was skipped: %q", res.SkipReason)
@@ -68,7 +68,7 @@ func TestE2ERebaseFromDifferentBranchNotSkipped(t *testing.T) {
 	repoDir, _ := makeRepoOnFeatureBranchWithStaleOriginMain(t)
 
 	repo := RepoInfo{Path: repoDir, RelPath: "repo"}
-	res := processSingleReset(repo, remoteTarget("origin", "main"), "rebase", nil)
+	res := processSingleReset(context.Background(), repo, remoteTarget("origin", "main"), "rebase", nil)
 
 	if res.Skipped {
 		t.Fatalf("expected rebase to run, but it was skipped: %q", res.SkipReason)
@@ -94,7 +94,7 @@ func TestE2ESoftResetFromDifferentBranchNotSkipped(t *testing.T) {
 	repoDir, _ := makeRepoOnFeatureBranchWithStaleOriginMain(t)
 
 	repo := RepoInfo{Path: repoDir, RelPath: "repo"}
-	res := processSingleReset(repo, remoteTarget("origin", "main"), "soft", nil)
+	res := processSingleReset(context.Background(), repo, remoteTarget("origin", "main"), "soft", nil)
 
 	if res.Skipped {
 		t.Fatalf("expected soft reset to run, but it was skipped: %q", res.SkipReason)
@@ -137,7 +137,7 @@ func TestE2ECustomRemoteProcessSingleReset(t *testing.T) {
 	repoDir, _ := makeRepoWithCustomRemote(t, "upstream")
 
 	repo := RepoInfo{Path: repoDir, RelPath: "repo"}
-	resOrigin := processSingleReset(repo, remoteTarget("origin", "main"), "soft", nil)
+	resOrigin := processSingleReset(context.Background(), repo, remoteTarget("origin", "main"), "soft", nil)
 	if !resOrigin.Skipped {
 		t.Errorf("expected skip when using non-existent remote 'origin', got success=%v error=%q", resOrigin.Success, resOrigin.Error)
 	}
@@ -145,7 +145,7 @@ func TestE2ECustomRemoteProcessSingleReset(t *testing.T) {
 		t.Errorf("expected skip reason to mention 'origin', got %q", resOrigin.SkipReason)
 	}
 
-	resUpstream := processSingleReset(repo, remoteTarget("upstream", "main"), "soft", nil)
+	resUpstream := processSingleReset(context.Background(), repo, remoteTarget("upstream", "main"), "soft", nil)
 	if resUpstream.Skipped {
 		t.Fatalf("expected reset to run with remote 'upstream', got skipped: %q", resUpstream.SkipReason)
 	}
@@ -428,7 +428,7 @@ func TestE2EInlineRemoteReset(t *testing.T) {
 	repo := RepoInfo{Path: repoDir, RelPath: "repo"}
 
 	target := resolveResetTarget(repoDir, "origin/main", "", "", false)
-	res := processSingleReset(repo, target, "hard", nil)
+	res := processSingleReset(context.Background(), repo, target, "hard", nil)
 	if !res.Success {
 		t.Fatalf("expected Success=true, got error=%q skipped=%v reason=%q", res.Error, res.Skipped, res.SkipReason)
 	}
@@ -455,7 +455,7 @@ func TestE2EInlineRemoteResetSlashedBranch(t *testing.T) {
 
 	repo := RepoInfo{Path: repoDir, RelPath: "repo"}
 	target := resolveResetTarget(repoDir, "origin/feat/branch1", "", "", false)
-	res := processSingleReset(repo, target, "hard", nil)
+	res := processSingleReset(context.Background(), repo, target, "hard", nil)
 	if !res.Success {
 		t.Fatalf("expected Success=true resetting to origin/feat/branch1, got error=%q skipped=%v reason=%q",
 			res.Error, res.Skipped, res.SkipReason)
@@ -489,7 +489,7 @@ func TestE2ECustomRemoteSwitchBranch(t *testing.T) {
 	runCmd(t, otherDir, "git", "push", "upstream", "develop")
 
 	repo := RepoInfo{Path: repoDir, RelPath: "repo"}
-	res := processSingleRepo(repo, "develop", "upstream", nil)
+	res := processSingleRepo(context.Background(), repo, "develop", "upstream", nil)
 	if !res.Success {
 		t.Fatalf("expected switch to develop via upstream to succeed, got error: %q", res.Error)
 	}
@@ -552,7 +552,7 @@ func TestHardResetRunsWhenAlreadyAtTarget(t *testing.T) {
 	writeFile(t, repoDir, "README.md", "modified content — should be discarded")
 
 	repo := RepoInfo{Path: repoDir, RelPath: "repo"}
-	res := processSingleReset(repo, remoteTarget("origin", "main"), "hard", nil)
+	res := processSingleReset(context.Background(), repo, remoteTarget("origin", "main"), "hard", nil)
 
 	if res.Skipped {
 		t.Fatalf("hard reset must not be skipped even when HEAD == origin/main; got skipped: %q", res.SkipReason)
@@ -574,7 +574,7 @@ func TestRebaseRunsWhenAlreadyAtTarget(t *testing.T) {
 	repoDir, _ := makeRepoWithRemote(t)
 
 	repo := RepoInfo{Path: repoDir, RelPath: "repo"}
-	res := processSingleReset(repo, remoteTarget("origin", "main"), "rebase", nil)
+	res := processSingleReset(context.Background(), repo, remoteTarget("origin", "main"), "rebase", nil)
 
 	if res.Skipped {
 		t.Fatalf("rebase must not be skipped even when HEAD == origin/main; got skipped: %q", res.SkipReason)

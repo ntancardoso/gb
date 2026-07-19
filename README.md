@@ -29,7 +29,7 @@ curl -fsSL https://raw.githubusercontent.com/ntancardoso/gb/main/install.sh | sh
 curl -fsSL https://raw.githubusercontent.com/ntancardoso/gb/main/install.sh | sh -s -- --pre-release
 
 # Specific version
-curl -fsSL https://raw.githubusercontent.com/ntancardoso/gb/main/install.sh | sh -s -- --version v0.2.3
+curl -fsSL https://raw.githubusercontent.com/ntancardoso/gb/main/install.sh | sh -s -- --version v0.2.7
 ```
 
 ### Windows (PowerShell)
@@ -42,10 +42,12 @@ irm https://raw.githubusercontent.com/ntancardoso/gb/main/install.ps1 | iex
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/ntancardoso/gb/main/install.ps1))) -PreRelease
 
 # Specific version
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/ntancardoso/gb/main/install.ps1))) -Version v0.2.3
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/ntancardoso/gb/main/install.ps1))) -Version v0.2.7
 ```
 
 Installs to `%LOCALAPPDATA%\Programs\gb` and adds it to your user PATH automatically.
+
+> Some antivirus products (e.g. Avast) hold or block freshly downloaded unsigned binaries. The install still succeeds; whitelist the install directory or retry `gb --version` after the scan completes.
 
 ### Uninstall
 
@@ -239,9 +241,11 @@ gb -wo feature/my-task               # Print worktree paths (for scripting)
 gb -l -iw                            # Include worktree repos in branch listing
 ```
 
-The `-i`/`-e` (include/exclude dirs) and `-ib`/`-eb` (include/exclude by current branch) filters all apply to worktree commands. By default, worktree repos are excluded from all operations. Use `-iw` / `--include-worktrees` to include them.
+The `-i`/`-e` (include/exclude dirs) and `-ib`/`-eb` (include/exclude by current branch) filters all apply to worktree commands. Worktree commands always operate on the main repo (linked worktrees are deduplicated). For all other operations, worktree repos are excluded by default; use `-iw` / `--include-worktrees` to include them.
 
 The `-wr` flag supports glob patterns (`*`, `?`, `[...]`) to match multiple branches at once. The main worktree is never removed.
+
+`-wc` copies the repo's `.env` file (if present) into the new worktree, preserving its permissions.
 
 ### Advanced Options
 
@@ -253,6 +257,8 @@ gb --workers 50 -c "status"    # Long form
 # Custom page size for progress display
 gb -ps 10 -c "status"          # Show 10 repos per page
 gb --size 30 -c "status"       # Show 30 repos per page
+# Pages can be switched with the arrow / PgUp / PgDn keys while the operation
+# runs and while the "View detailed logs? (y/N)" prompt is shown
 
 # Exclude additional directories
 gb -e "build,dist,temp" -c "status"           # Short form
@@ -428,11 +434,21 @@ gb -c "status"
 - **Sync: rebase conflict**: `git rebase --abort` is run automatically; repo is reported as failed with clean state restored
 - **Sync: non-interactive terminal**: `-rh` and `-rb` exit with an error if stdin is not a TTY; use `-rs` for CI pipelines
 - **Sync: mid-operation repo**: Repos in the middle of a merge, cherry-pick, or revert are skipped by hard reset to avoid silent data loss
+- **Sync: commits ahead of target**: The hard-reset confirmation prompt also lists repos whose HEAD is ahead of the reset target, since those commits would be discarded
+- **Exit codes**: All operations (including `-dv` and `-tr`) exit non-zero when any repo fails
+
+## Behavior Notes
+
+- Shallow repos are fetched with `--depth=1` on switch/reset to keep them shallow
+- `-c`/`-sh` commands time out after 5 minutes and are retried up to 3 times on timeout
+- Fetch/ls-remote runs with `protocol.ext.allow=never`; a repo's git hooks and aliases still run as usual, so only scan directory trees you trust
+- Branch/ref/remote arguments must not start with `-`
+- Log directories (`gb-logs-*` in the system temp dir) from runs older than 7 days are purged automatically on the next run
 
 ## Requirements
 
-- **Git**: Must be installed and accessible in PATH
-- **Go 1.19+**: For building from source
+- **Git 2.24+**: Must be installed and accessible in PATH (divergence checks use `--end-of-options`)
+- **Go 1.26+**: For building from source
 - **File System**: Read access to repository directories
 
 ## Platform Support
@@ -440,15 +456,6 @@ gb -c "status"
 - **Windows**: Full support including WSL symlinks and NTFS junctions
 - **Linux**: Native support with symlink resolution
 - **macOS**: Native support with symlink resolution
-
-## Contributing
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature-branch`)
-3. Run tests: `go test ./...`
-4. Commit your changes
-5. Push to the branch
-6. Create a Pull Request
 
 ## License
 

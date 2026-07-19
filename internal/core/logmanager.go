@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 type LogManager struct {
@@ -14,7 +15,30 @@ type LogManager struct {
 	mu       sync.Mutex
 }
 
+// purgeStaleLogDirs removes gb-logs-* temp dirs from previous runs older than
+// seven days. Best-effort: current-run logs are kept so the printed path stays
+// reviewable after gb exits.
+func purgeStaleLogDirs() {
+	entries, err := os.ReadDir(os.TempDir())
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-7 * 24 * time.Hour)
+	for _, e := range entries {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), "gb-logs-") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || info.ModTime().After(cutoff) {
+			continue
+		}
+		_ = os.RemoveAll(filepath.Join(os.TempDir(), e.Name()))
+	}
+}
+
 func NewLogManager() (*LogManager, error) {
+	purgeStaleLogDirs()
+
 	tempDir, err := os.MkdirTemp("", "gb-logs-*")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temp directory: %w", err)

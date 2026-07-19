@@ -91,8 +91,7 @@ function Confirm-Checksum {
   $lines = Get-Content $ChecksumsFile
   $entry = $lines | Where-Object { $_ -match "\s$([regex]::Escape($name))$" } | Select-Object -First 1
   if (-not $entry) {
-    Write-Warn "No checksum entry for $name, skipping verification"
-    return
+    Write-Fatal "No checksum entry for $name in checksums.txt - refusing to install unverified binary"
   }
   $expected = ($entry -split '\s+')[0]
   $actual   = Get-FileHash256 $Archive
@@ -222,7 +221,12 @@ function Main {
     }
 
     Write-Host ""
-    & (Join-Path $installDir $Binary) --version
+    try {
+      & (Join-Path $installDir $Binary) --version
+    } catch {
+      Write-Warn "Installed, but running the binary failed (antivirus may be blocking or still scanning it)."
+      Write-Warn "Verify with 'gb --version' in a new terminal, or whitelist $installDir in your antivirus."
+    }
 
   } finally {
     Remove-Item $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
